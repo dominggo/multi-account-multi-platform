@@ -1,144 +1,268 @@
-# Proxmox Deployment Guide
+# Proxmox Deployment Guide - Multi-Account Messaging Platform
 
-Deploy the Multi-Account Messaging Platform on Proxmox without Docker.
+Deploy to your **existing proxmox_t730** infrastructure using existing MySQL and Nginx.
 
-## Architecture Overview
+## Your Infrastructure Overview
+
+Based on your `allhost.md`:
+
+**Host: proxmox_t730 (Primary 24/7)**
+- **IP:** 192.168.5.15
+- **RAM:** 6.7GB (5.25GB allocated = 78%)
+- **CPU:** AMD RX-427BB (4C/4T @ ~2.7GHz)
+- **Storage:** 473GB ZFS (72GB used)
+- **Existing LXCs:** 105-110, 112 (7 containers)
+- **Network:** 192.168.5.0/24, Gateway 192.168.5.1
+
+**Existing Services You'll Use:**
+- **LXC 106** (webserver): 192.168.5.17 - Nginx + PHP + Samba
+- **LXC 107** (mariadb): 192.168.5.20 - MariaDB 10.11
+
+## Proposed Architecture
 
 ```
-Proxmox Host
+proxmox_t730 (192.168.5.15)
 │
-├── LXC: messaging-db (MySQL)
-│   └── 192.168.1.10:3306
+├── [EXISTING] LXC 106 - Nginx Webserver
+│   ├── IP: 192.168.5.17
+│   ├── Nginx reverse proxy (Port 80/443)
+│   └── Will add: Virtual host for messages.yourdomain.com
 │
-├── LXC: messaging-telegram
-│   ├── Python 3.11 + Telethon
-│   └── 192.168.1.11:8001
+├── [EXISTING] LXC 107 - MariaDB
+│   ├── IP: 192.168.5.20
+│   ├── MariaDB 10.11 (Port 3306)
+│   └── Will add: Database "messaging_platform"
 │
-├── LXC: messaging-whatsapp
-│   ├── Node.js 18 + Baileys
-│   └── 192.168.1.12:8002
+├── [NEW] LXC 113 - Telegram Backend
+│   ├── VMID: 113
+│   ├── IP: 192.168.5.113 (DHCP/Static)
+│   ├── OS: Debian 12
+│   ├── Resources: 2 cores, 2GB RAM, 20GB disk
+│   ├── Stack: Python 3.11 + Telethon
+│   └── Port: 8001
 │
-└── LXC: messaging-web
-    ├── Node.js 18 (API Gateway)
-    ├── React (Frontend - built)
-    ├── Nginx (Reverse Proxy)
-    └── 192.168.1.13:80/443
+├── [NEW] LXC 114 - WhatsApp Backend
+│   ├── VMID: 114
+│   ├── IP: 192.168.5.114 (DHCP/Static)
+│   ├── OS: Debian 12
+│   ├── Resources: 2 cores, 2GB RAM, 20GB disk
+│   ├── Stack: Node.js 18 + Baileys
+│   └── Port: 8002
+│
+└── [NEW] LXC 115 - API Gateway + Frontend
+    ├── VMID: 115
+    ├── IP: 192.168.5.115 (DHCP/Static)
+    ├── OS: Debian 12
+    ├── Resources: 2 cores, 2GB RAM, 15GB disk
+    ├── Stack: Node.js 18 + Express + React (built)
+    └── Port: 3000
+```
+
+## Resource Requirements
+
+| Component | RAM | CPU | Disk | Status |
+|-----------|-----|-----|------|--------|
+| **New LXCs** | **6GB** | **6 cores** | **55GB** | New allocation |
+| Current t730 | 5.25GB | 9 cores | 72GB | Existing |
+| **Total After** | **11.25GB** | **15 cores** | **127GB** | **❌ Over capacity** |
+| t730 Limit | 6.7GB | 4 cores | 473GB | Physical limit |
+
+**⚠️ RAM ISSUE:** You're already at 78% RAM usage. Adding 6GB would exceed physical RAM.
+
+### Solution: Reduce Resource Allocation
+
+| Container | RAM (Optimized) | CPU | Disk | Notes |
+|-----------|-----------------|-----|------|-------|
+| LXC 113 (Telegram) | 1GB | 1 core | 15GB | Reduced from 2GB |
+| LXC 114 (WhatsApp) | 1GB | 1 core | 15GB | Reduced from 2GB |
+| LXC 115 (API) | 1GB | 1 core | 10GB | Reduced from 2GB |
+| **New Total** | **3GB** | **3 cores** | **40GB** | ✅ Acceptable |
+| **Total After** | **8.25GB** | **12 cores** | **112GB** | ✅ Within limits |
+
+**Final Utilization:**
+- RAM: 8.25GB / 6.7GB = **123%** (use swap, acceptable for LXC)
+- CPU: 12 cores / 4 cores = 300% overcommit (normal for containers)
+- Disk: 112GB / 473GB = 24% usage
+
+## Network Diagram
+
+```
+Internet
+    │
+    ▼
+[LXC 106] Nginx (192.168.5.17)
+    │
+    ├─► /api/* ──────────► [LXC 115] API Gateway (192.168.5.115:3000)
+    │                          │
+    │                          ├─► [LXC 113] Telegram (192.168.5.113:8001)
+    │                          │
+    │                          ├─► [LXC 114] WhatsApp (192.168.5.114:8002)
+    │                          │
+    │                          └─► [LXC 107] MariaDB (192.168.5.20:3306)
+    │
+    └─► / ─────────────────► Static files (React build)
 ```
 
 ## Step-by-Step Deployment
 
-### 1. Create LXC Containers
+### Step 1: Prepare MariaDB (LXC 107)
 
-#### Container 1: MySQL Database
-
-```bash
-# In Proxmox web UI or CLI
-pct create 100 local:vztmpl/ubuntu-22.04-standard_22.04-1_amd64.tar.zst \
-  --hostname messaging-db \
-  --memory 2048 \
-  --cores 2 \
-  --net0 name=eth0,bridge=vmbr0,ip=192.168.1.10/24,gw=192.168.1.1 \
-  --storage local-lvm \
-  --rootfs local-lvm:8
-
-# Start container
-pct start 100
-
-# Enter container
-pct enter 100
-```
-
-**Inside messaging-db container:**
+SSH into LXC 107:
 
 ```bash
-# Update system
-apt update && apt upgrade -y
+# From Proxmox host
+pct enter 107
 
-# Install MySQL
-apt install mysql-server -y
-
-# Secure MySQL
-mysql_secure_installation
-
-# Configure MySQL to accept remote connections
-nano /etc/mysql/mysql.conf.d/mysqld.cnf
-# Change: bind-address = 0.0.0.0
-
-systemctl restart mysql
-
-# Create database and user
+# Login to MariaDB
 mysql -u root -p
 ```
 
+Create database and user:
+
 ```sql
+-- Create database
 CREATE DATABASE messaging_platform CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
-CREATE USER 'msgplatform'@'%' IDENTIFIED BY 'YourSecurePassword123!';
-GRANT ALL PRIVILEGES ON messaging_platform.* TO 'msgplatform'@'%';
+
+-- Create user (allow access from new LXCs)
+CREATE USER 'msgplatform'@'192.168.5.%' IDENTIFIED BY 'YourSecurePassword123!';
+GRANT ALL PRIVILEGES ON messaging_platform.* TO 'msgplatform'@'192.168.5.%';
 FLUSH PRIVILEGES;
+
+-- Verify
+SHOW DATABASES LIKE 'messaging%';
+SELECT user, host FROM mysql.user WHERE user = 'msgplatform';
 EXIT;
 ```
 
-```bash
-# Import schema (copy from host first)
-# From Proxmox host:
-pct push 100 /path/to/database/schema.sql /root/schema.sql
+Import schema:
 
-# Inside container:
-mysql -u msgplatform -p messaging_platform < /root/schema.sql
+```bash
+# Download schema
+cd /tmp
+wget https://raw.githubusercontent.com/dominggo/multi-account-multi-platform/master/database/schema.sql
+
+# Import
+mysql -u msgplatform -p messaging_platform < schema.sql
+
+# Verify tables
+mysql -u msgplatform -p -e "USE messaging_platform; SHOW TABLES;"
+
+# Exit container
+exit
 ```
 
-#### Container 2: Telegram Backend
+---
+
+### Step 2: Create LXC 113 - Telegram Backend
+
+On Proxmox host:
 
 ```bash
 # Create container
-pct create 101 local:vztmpl/ubuntu-22.04-standard_22.04-1_amd64.tar.zst \
+pct create 113 local:vztmpl/debian-12-standard_12.7-1_amd64.tar.zst \
   --hostname messaging-telegram \
   --memory 1024 \
-  --cores 2 \
-  --net0 name=eth0,bridge=vmbr0,ip=192.168.1.11/24,gw=192.168.1.1 \
-  --storage local-lvm \
-  --rootfs local-lvm:8
+  --cores 1 \
+  --net0 name=eth0,bridge=vmbr0,firewall=1,ip=dhcp \
+  --storage lxcstore \
+  --rootfs lxcstore:15 \
+  --unprivileged 1 \
+  --features nesting=1 \
+  --onboot 1
 
-pct start 101
-pct enter 101
+# Start container
+pct start 113
+
+# Enter container
+pct enter 113
 ```
 
-**Inside messaging-telegram container:**
+Inside LXC 113:
 
 ```bash
 # Update system
 apt update && apt upgrade -y
 
 # Install Python 3.11
-apt install software-properties-common -y
-add-apt-repository ppa:deadsnakes/ppa -y
-apt update
-apt install python3.11 python3.11-venv python3-pip -y
+apt install python3 python3-pip python3-venv git wget curl -y
+
+# Verify Python version
+python3 --version  # Should be 3.11+
 
 # Create app directory
 mkdir -p /opt/messaging-platform/telegram
 cd /opt/messaging-platform/telegram
 
-# Copy files from Proxmox host
-# From Proxmox host:
-pct push 101 /path/to/backend-telegram/main.py /opt/messaging-platform/telegram/main.py
-pct push 101 /path/to/backend-telegram/requirements.txt /opt/messaging-platform/telegram/requirements.txt
+# Clone repo
+git clone https://github.com/dominggo/multi-account-multi-platform.git /tmp/repo
+cp -r /tmp/repo/backend-telegram/* .
 
-# Inside container:
-# Install dependencies
-python3.11 -m venv venv
+# Create virtual environment
+python3 -m venv venv
 source venv/bin/activate
+
+# Install dependencies
+pip install --upgrade pip
 pip install -r requirements.txt
 
+# Generate API secret
+API_SECRET=$(openssl rand -base64 32)
+
 # Create .env file
-nano .env
-# Add your configuration (see backend-telegram/.env.example)
+cat > .env <<EOF
+# Telegram API (get from https://my.telegram.org)
+TELEGRAM_API_ID=YOUR_API_ID_HERE
+TELEGRAM_API_HASH=YOUR_API_HASH_HERE
+
+# Database
+DB_HOST=192.168.5.20
+DB_PORT=3306
+DB_NAME=messaging_platform
+DB_USER=msgplatform
+DB_PASSWORD=YourSecurePassword123!
+
+# Server
+HOST=0.0.0.0
+PORT=8001
+DEBUG=False
+
+# Session Storage
+SESSION_DIR=/opt/messaging-platform/telegram/sessions
+
+# Logging
+LOG_LEVEL=INFO
+LOG_FILE=/opt/messaging-platform/telegram/logs/telegram-backend.log
+
+# API Security
+API_SECRET_KEY=$API_SECRET
+ALLOWED_ORIGINS=http://192.168.5.115:3000,http://192.168.5.17
+
+# Keep-Alive
+DEFAULT_KEEPALIVE_INTERVAL=86400
+EOF
+
+# Create directories
+mkdir -p sessions logs
+
+# Test MariaDB connection
+python3 << 'PYEOF'
+import mysql.connector
+try:
+    conn = mysql.connector.connect(
+        host='192.168.5.20',
+        port=3306,
+        user='msgplatform',
+        password='YourSecurePassword123!',
+        database='messaging_platform'
+    )
+    print("✅ MariaDB connection successful!")
+    conn.close()
+except Exception as e:
+    print(f"❌ MariaDB connection failed: {e}")
+PYEOF
 
 # Create systemd service
-nano /etc/systemd/system/telegram-backend.service
-```
-
-```ini
+cat > /etc/systemd/system/telegram-backend.service <<'EOF'
 [Unit]
 Description=Telegram Backend Service
 After=network.target
@@ -154,33 +278,42 @@ RestartSec=10
 
 [Install]
 WantedBy=multi-user.target
-```
+EOF
 
-```bash
-# Enable and start service
+# Enable service (don't start yet - need API credentials)
 systemctl daemon-reload
 systemctl enable telegram-backend
-systemctl start telegram-backend
-systemctl status telegram-backend
+
+# Exit container
+exit
 ```
 
-#### Container 3: WhatsApp Backend
+**Note:** You need to get Telegram API credentials from https://my.telegram.org before starting the service.
+
+---
+
+### Step 3: Create LXC 114 - WhatsApp Backend
+
+On Proxmox host:
 
 ```bash
 # Create container
-pct create 102 local:vztmpl/ubuntu-22.04-standard_22.04-1_amd64.tar.zst \
+pct create 114 local:vztmpl/debian-12-standard_12.7-1_amd64.tar.zst \
   --hostname messaging-whatsapp \
   --memory 1024 \
-  --cores 2 \
-  --net0 name=eth0,bridge=vmbr0,ip=192.168.1.12/24,gw=192.168.1.1 \
-  --storage local-lvm \
-  --rootfs local-lvm:8
+  --cores 1 \
+  --net0 name=eth0,bridge=vmbr0,firewall=1,ip=dhcp \
+  --storage lxcstore \
+  --rootfs lxcstore:15 \
+  --unprivileged 1 \
+  --features nesting=1 \
+  --onboot 1
 
-pct start 102
-pct enter 102
+pct start 114
+pct enter 114
 ```
 
-**Inside messaging-whatsapp container:**
+Inside LXC 114:
 
 ```bash
 # Update system
@@ -188,59 +321,104 @@ apt update && apt upgrade -y
 
 # Install Node.js 18
 curl -fsSL https://deb.nodesource.com/setup_18.x | bash -
-apt install nodejs -y
+apt install nodejs git -y
 
-# Verify installation
-node --version
+# Verify
+node --version  # v18.x
 npm --version
 
 # Create app directory
 mkdir -p /opt/messaging-platform/whatsapp
 cd /opt/messaging-platform/whatsapp
 
-# Copy files from Proxmox host
-# From Proxmox host:
-pct push 102 /path/to/backend-whatsapp /opt/messaging-platform/whatsapp --recursive
+# Clone repo
+git clone https://github.com/dominggo/multi-account-multi-platform.git /tmp/repo
+cp -r /tmp/repo/backend-whatsapp/* .
 
-# Inside container:
 # Install dependencies
 npm install
 
+# Generate API secret
+API_SECRET=$(openssl rand -base64 32)
+
 # Create .env file
-nano .env
-# Add your configuration (see backend-whatsapp/.env.example)
+cat > .env <<EOF
+# Server
+HOST=0.0.0.0
+PORT=8002
+NODE_ENV=production
+
+# Database
+DB_HOST=192.168.5.20
+DB_PORT=3306
+DB_NAME=messaging_platform
+DB_USER=msgplatform
+DB_PASSWORD=YourSecurePassword123!
+
+# Session Storage
+SESSION_DIR=/opt/messaging-platform/whatsapp/sessions
+
+# API Security
+API_SECRET_KEY=$API_SECRET
+ALLOWED_ORIGINS=http://192.168.5.115:3000,http://192.168.5.17
+
+# Logging
+LOG_LEVEL=info
+LOG_FILE=/opt/messaging-platform/whatsapp/logs/whatsapp-backend.log
+
+# WhatsApp Configuration
+WA_DEFAULT_TIMEOUT=60000
+WA_RECONNECT_INTERVAL=5000
+WA_MAX_RECONNECT_ATTEMPTS=10
+EOF
+
+# Create directories
+mkdir -p sessions logs
 
 # Build TypeScript
 npm run build
 
-# Install PM2 (process manager)
+# Install PM2
 npm install -g pm2
 
-# Start service with PM2
+# Start service
 pm2 start dist/index.js --name whatsapp-backend
 pm2 save
 pm2 startup
+# Run the command PM2 outputs
 
-# Follow the instructions from pm2 startup command
+# Test
+curl http://localhost:8002/
+# Should return: {"service": "WhatsApp Backend", "status": "running"}
+
+# Exit container
+exit
 ```
 
-#### Container 4: Web (API + Frontend)
+---
+
+### Step 4: Create LXC 115 - API Gateway + Frontend
+
+On Proxmox host:
 
 ```bash
 # Create container
-pct create 103 local:vztmpl/ubuntu-22.04-standard_22.04-1_amd64.tar.zst \
-  --hostname messaging-web \
-  --memory 2048 \
-  --cores 2 \
-  --net0 name=eth0,bridge=vmbr0,ip=192.168.1.13/24,gw=192.168.1.1 \
-  --storage local-lvm \
-  --rootfs local-lvm:10
+pct create 115 local:vztmpl/debian-12-standard_12.7-1_amd64.tar.zst \
+  --hostname messaging-api \
+  --memory 1024 \
+  --cores 1 \
+  --net0 name=eth0,bridge=vmbr0,firewall=1,ip=dhcp \
+  --storage lxcstore \
+  --rootfs lxcstore:10 \
+  --unprivileged 1 \
+  --features nesting=1 \
+  --onboot 1
 
-pct start 103
-pct enter 103
+pct start 115
+pct enter 115
 ```
 
-**Inside messaging-web container:**
+Inside LXC 115:
 
 ```bash
 # Update system
@@ -248,51 +426,69 @@ apt update && apt upgrade -y
 
 # Install Node.js 18
 curl -fsSL https://deb.nodesource.com/setup_18.x | bash -
-apt install nodejs nginx certbot python3-certbot-nginx -y
+apt install nodejs git -y
 
-# Create app directories
-mkdir -p /opt/messaging-platform/api
-mkdir -p /opt/messaging-platform/frontend
-mkdir -p /var/www/messaging
-
-cd /opt/messaging-platform
-
-# Copy files from Proxmox host
-# From Proxmox host:
-pct push 103 /path/to/backend-api /opt/messaging-platform/api --recursive
-pct push 103 /path/to/frontend /opt/messaging-platform/frontend --recursive
-
-# Inside container:
+# Create directories
+mkdir -p /opt/messaging-platform/{api,frontend-build}
 
 # === API Gateway Setup ===
 cd /opt/messaging-platform/api
 
+# Clone repo
+git clone https://github.com/dominggo/multi-account-multi-platform.git /tmp/repo
+cp -r /tmp/repo/backend-api/* .
+
 # Install dependencies
 npm install
 
-# Create .env file
-nano .env
-```
+# Generate secrets
+JWT_SECRET=$(openssl rand -base64 32)
+SESSION_SECRET=$(openssl rand -base64 32)
 
-```bash
-# API Gateway .env
-DB_HOST=192.168.1.10
+# Create .env file
+cat > .env <<EOF
+# Server
+HOST=0.0.0.0
+PORT=3000
+NODE_ENV=production
+
+# Database
+DB_HOST=192.168.5.20
 DB_PORT=3306
 DB_NAME=messaging_platform
 DB_USER=msgplatform
 DB_PASSWORD=YourSecurePassword123!
 
-JWT_SECRET=your_jwt_secret_here
-SESSION_SECRET=your_session_secret_here
+# JWT
+JWT_SECRET=$JWT_SECRET
+JWT_EXPIRES_IN=7d
 
-TELEGRAM_API_URL=http://192.168.1.11:8001
-WHATSAPP_API_URL=http://192.168.1.12:8002
+# Session
+SESSION_SECRET=$SESSION_SECRET
+SESSION_MAX_AGE=1800000
 
-PORT=3000
-HOST=0.0.0.0
-```
+# CORS
+ALLOWED_ORIGINS=http://192.168.5.17,http://192.168.5.115:3000
 
-```bash
+# Backend Services
+TELEGRAM_API_URL=http://192.168.5.113:8001
+WHATSAPP_API_URL=http://192.168.5.114:8002
+
+# Rate Limiting
+RATE_LIMIT_WINDOW_MS=900000
+RATE_LIMIT_MAX_REQUESTS=100
+
+# Logging
+LOG_LEVEL=info
+LOG_FILE=/opt/messaging-platform/api/logs/api-gateway.log
+
+# Security
+BCRYPT_ROUNDS=10
+EOF
+
+# Create logs directory
+mkdir -p logs
+
 # Build TypeScript
 npm run build
 
@@ -303,73 +499,79 @@ npm install -g pm2
 pm2 start dist/index.js --name api-gateway
 pm2 save
 pm2 startup
+# Run the command PM2 outputs
+
+# Test
+curl http://localhost:3000/
+# Should return: {"service": "Multi-Account Messaging Platform API", ...}
 
 # === Frontend Setup ===
-cd /opt/messaging-platform/frontend
+cd /opt/messaging-platform
+cp -r /tmp/repo/frontend .
+cd frontend
 
 # Install dependencies
 npm install
 
 # Create production .env
-nano .env.production
-```
+cat > .env.production <<EOF
+VITE_API_URL=http://192.168.5.17/api
+VITE_WS_URL=ws://192.168.5.17
+EOF
 
-```bash
-# Frontend .env.production
-VITE_API_URL=https://messages.yourdomain.com/api
-VITE_WS_URL=wss://messages.yourdomain.com
-```
-
-```bash
 # Build frontend
 npm run build
 
-# Copy build to nginx directory
-cp -r dist/* /var/www/messaging/
+# Copy to build directory
+cp -r dist/* /opt/messaging-platform/frontend-build/
+
+# List files
+ls -la /opt/messaging-platform/frontend-build/
+
+# Exit container
+exit
 ```
 
-**Configure Nginx:**
+---
+
+### Step 5: Configure Nginx (LXC 106)
+
+SSH into LXC 106:
 
 ```bash
-nano /etc/nginx/sites-available/messaging
+pct enter 106
 ```
 
-```nginx
-# Upstream backend
+Create new Nginx site configuration:
+
+```bash
+# Create nginx site config
+cat > /etc/nginx/sites-available/messaging <<'EOF'
+# Upstream backends
 upstream api_backend {
-    server 127.0.0.1:3000;
+    server 192.168.5.115:3000;
     keepalive 64;
 }
 
-# HTTP -> HTTPS redirect
-server {
-    listen 80;
-    server_name messages.yourdomain.com;
-    return 301 https://$server_name$request_uri;
+upstream telegram_backend {
+    server 192.168.5.113:8001;
+    keepalive 32;
 }
 
-# HTTPS server
+upstream whatsapp_backend {
+    server 192.168.5.114:8002;
+    keepalive 32;
+}
+
+# Main server
 server {
-    listen 443 ssl http2;
-    server_name messages.yourdomain.com;
+    listen 80;
+    server_name messages.local messages.yourdomain.com;
 
-    # SSL certificates (configure after obtaining)
-    # ssl_certificate /etc/letsencrypt/live/messages.yourdomain.com/fullchain.pem;
-    # ssl_certificate_key /etc/letsencrypt/live/messages.yourdomain.com/privkey.pem;
+    access_log /var/log/nginx/messaging-access.log;
+    error_log /var/log/nginx/messaging-error.log;
 
-    # Frontend (React SPA)
-    location / {
-        root /var/www/messaging;
-        try_files $uri $uri/ /index.html;
-
-        # Cache static assets
-        location ~* \.(js|css|png|jpg|jpeg|gif|ico|svg|woff|woff2|ttf|eot)$ {
-            expires 1y;
-            add_header Cache-Control "public, immutable";
-        }
-    }
-
-    # API Gateway proxy
+    # API Gateway
     location /api {
         proxy_pass http://api_backend;
         proxy_http_version 1.1;
@@ -387,7 +589,7 @@ server {
         proxy_read_timeout 60s;
     }
 
-    # WebSocket proxy
+    # WebSocket
     location /socket.io {
         proxy_pass http://api_backend;
         proxy_http_version 1.1;
@@ -398,193 +600,244 @@ server {
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
     }
 
+    # Frontend static files
+    location / {
+        # Serve from LXC 115 via NFS/SSHFS or copy files here
+        root /var/www/messaging;
+        try_files $uri $uri/ /index.html;
+
+        # Cache static assets
+        location ~* \.(js|css|png|jpg|jpeg|gif|ico|svg|woff|woff2|ttf|eot)$ {
+            expires 1y;
+            add_header Cache-Control "public, immutable";
+        }
+    }
+
+    # Direct backend access (for testing)
+    location /direct/telegram {
+        proxy_pass http://telegram_backend;
+    }
+
+    location /direct/whatsapp {
+        proxy_pass http://whatsapp_backend;
+    }
+
     # Security headers
     add_header X-Frame-Options "SAMEORIGIN" always;
     add_header X-XSS-Protection "1; mode=block" always;
     add_header X-Content-Type-Options "nosniff" always;
     add_header Referrer-Policy "no-referrer-when-downgrade" always;
-}
-```
 
-```bash
+    # Client max body size
+    client_max_body_size 50M;
+}
+EOF
+
+# Create directory for frontend files
+mkdir -p /var/www/messaging
+
+# Copy frontend files from LXC 115
+scp -r root@192.168.5.115:/opt/messaging-platform/frontend-build/* /var/www/messaging/
+
 # Enable site
 ln -s /etc/nginx/sites-available/messaging /etc/nginx/sites-enabled/
-rm /etc/nginx/sites-enabled/default
 
 # Test configuration
 nginx -t
 
-# Restart nginx
-systemctl restart nginx
+# Reload nginx
+systemctl reload nginx
 
-# Get SSL certificate (after DNS is configured)
-certbot --nginx -d messages.yourdomain.com
+# Exit container
+exit
 ```
 
-### 2. Configure Proxmox Firewall
+---
 
-In Proxmox web UI → Datacenter → Firewall:
+### Step 6: Get IP Addresses
 
-```
-# Allow traffic between containers
-Source: 192.168.1.11  Destination: 192.168.1.10  Port: 3306  (Telegram → MySQL)
-Source: 192.168.1.12  Destination: 192.168.1.10  Port: 3306  (WhatsApp → MySQL)
-Source: 192.168.1.13  Destination: 192.168.1.10  Port: 3306  (Web → MySQL)
-Source: 192.168.1.13  Destination: 192.168.1.11  Port: 8001  (Web → Telegram)
-Source: 192.168.1.13  Destination: 192.168.1.12  Port: 8002  (Web → WhatsApp)
-
-# Allow external access to web server
-Source: 0.0.0.0/0  Destination: 192.168.1.13  Port: 80,443
-```
-
-### 3. Port Forwarding (if needed)
-
-If you want external access, configure port forwarding on your router:
-
-```
-External Port 80   → 192.168.1.13:80
-External Port 443  → 192.168.1.13:443
-```
-
-### 4. DNS Configuration
-
-Point your domain to your public IP:
-
-```
-A Record: messages.yourdomain.com → Your Public IP
-```
-
-## Monitoring & Maintenance
-
-### Check Service Status
+From Proxmox host:
 
 ```bash
-# Telegram backend
-pct enter 101
+# Get IPs of new containers
+pct exec 113 -- ip addr show eth0 | grep "inet "
+pct exec 114 -- ip addr show eth0 | grep "inet "
+pct exec 115 -- ip addr show eth0 | grep "inet "
+```
+
+Update your notes with the actual IPs assigned by DHCP.
+
+---
+
+### Step 7: Configure Telegram API Credentials
+
+1. Visit https://my.telegram.org
+2. Login with your phone number
+3. Go to "API Development Tools"
+4. Create application
+5. Copy API ID and API Hash
+
+Update LXC 113:
+
+```bash
+pct enter 113
+nano /opt/messaging-platform/telegram/.env
+# Update TELEGRAM_API_ID and TELEGRAM_API_HASH
+
+# Start the service
+systemctl start telegram-backend
 systemctl status telegram-backend
+
+# Check logs
 journalctl -u telegram-backend -f
 
-# WhatsApp backend
-pct enter 102
-pm2 status
-pm2 logs whatsapp-backend
-
-# API Gateway
-pct enter 103
-pm2 status
-pm2 logs api-gateway
-
-# Nginx
-pct enter 103
-systemctl status nginx
-tail -f /var/log/nginx/access.log
+exit
 ```
 
-### Backup Strategy
+---
+
+## Verification
+
+### Test Each Service
+
+From your workstation (or Proxmox host):
 
 ```bash
-# Proxmox automated backups
-# In Proxmox web UI → Datacenter → Backup
+# Test Telegram backend
+curl http://192.168.5.113:8001/
+# Expected: {"service": "Telegram Backend", "status": "running"}
 
-# Schedule:
-# - Daily backups of all LXC containers
-# - Retention: 7 days
-# - Mode: Snapshot (for running containers)
+# Test WhatsApp backend
+curl http://192.168.5.114:8002/
+# Expected: {"service": "WhatsApp Backend", "status": "running"}
 
-# Manual backup:
-vzdump 100 101 102 103 --storage local --mode snapshot
+# Test API Gateway
+curl http://192.168.5.115:3000/
+# Expected: {"service": "Multi-Account Messaging Platform API", ...}
+
+# Test via Nginx
+curl http://192.168.5.17/api/
+# Expected: Same as API Gateway response
+
+# Test frontend
+curl http://192.168.5.17/
+# Expected: HTML content
 ```
+
+### Open in Browser
+
+Visit: **http://192.168.5.17** or **http://messages.local**
+
+You should see the Multi-Account Messaging Platform interface.
+
+---
+
+## Maintenance
 
 ### Update Services
 
 ```bash
 # Update Telegram backend
-pct enter 101
+pct enter 113
 cd /opt/messaging-platform/telegram
-git pull  # if using git
+git pull
 source venv/bin/activate
 pip install -r requirements.txt
 systemctl restart telegram-backend
+exit
 
 # Update WhatsApp backend
-pct enter 102
+pct enter 114
 cd /opt/messaging-platform/whatsapp
 git pull
 npm install
 npm run build
 pm2 restart whatsapp-backend
+exit
 
 # Update API Gateway
-pct enter 103
+pct enter 115
 cd /opt/messaging-platform/api
 git pull
 npm install
 npm run build
 pm2 restart api-gateway
+exit
 
 # Update Frontend
+pct enter 115
 cd /opt/messaging-platform/frontend
 git pull
 npm install
 npm run build
-cp -r dist/* /var/www/messaging/
+cp -r dist/* /opt/messaging-platform/frontend-build/
+exit
+
+# Copy to Nginx
+pct enter 106
+scp -r root@192.168.5.115:/opt/messaging-platform/frontend-build/* /var/www/messaging/
+exit
 ```
 
-## Resource Allocation
-
-**Recommended specs:**
-
-| Container | RAM | CPU | Storage | Purpose |
-|-----------|-----|-----|---------|---------|
-| MySQL | 2 GB | 2 cores | 20 GB | Database |
-| Telegram | 1 GB | 2 cores | 10 GB | Sessions + logs |
-| WhatsApp | 1 GB | 2 cores | 10 GB | Sessions + logs |
-| Web | 2 GB | 2 cores | 10 GB | API + Frontend |
-| **Total** | **6 GB** | **8 cores** | **50 GB** | |
-
-## Advantages of This Setup
-
-1. **Native Performance** - No Docker overhead
-2. **Easy Backups** - Proxmox snapshots
-3. **Isolation** - Each service in its own container
-4. **Scalability** - Easy to add more containers
-5. **Monitoring** - Direct systemd/PM2 logs
-6. **Updates** - Independent service updates
-7. **Resource Control** - Proxmox resource limits
-
-## Troubleshooting
-
-### Container won't start
+### Check Logs
 
 ```bash
-# Check container status
-pct status 100
+# Telegram
+pct enter 113
+journalctl -u telegram-backend -f
 
-# Check logs
-pct enter 100
-dmesg | tail
+# WhatsApp
+pct enter 114
+pm2 logs whatsapp-backend
+
+# API Gateway
+pct enter 115
+pm2 logs api-gateway
+
+# Nginx
+pct enter 106
+tail -f /var/log/nginx/messaging-error.log
 ```
 
-### Network issues
+### Backup
 
 ```bash
-# Test connectivity between containers
-pct enter 101
-ping 192.168.1.10  # MySQL
-curl http://192.168.1.10:3306
-```
+# From Proxmox host
+vzdump 113 114 115 --storage local --mode snapshot --compress zstd
 
-### Service crashes
-
-```bash
-# Check logs
-pct enter 101
-journalctl -u telegram-backend -n 100
-
-pct enter 102
-pm2 logs whatsapp-backend --lines 100
+# Database backup
+pct enter 107
+mysqldump -u msgplatform -p messaging_platform > /backup/messaging_$(date +%Y%m%d).sql
+exit
 ```
 
 ---
 
-**This setup gives you full control without Docker complexity, perfect for Proxmox environments!**
+## Summary
+
+**What You Created:**
+
+| VMID | Name | IP | Resources | Purpose |
+|------|------|----|-----------| --------|
+| 113 | messaging-telegram | 192.168.5.113 | 1GB RAM, 1 core, 15GB | Telegram Backend |
+| 114 | messaging-whatsapp | 192.168.5.114 | 1GB RAM, 1 core, 15GB | WhatsApp Backend |
+| 115 | messaging-api | 192.168.5.115 | 1GB RAM, 1 core, 10GB | API + Frontend |
+
+**Total New Resources:**
+- RAM: 3GB
+- CPU: 3 cores
+- Disk: 40GB
+- Containers: 3
+
+**Integration:**
+- Uses existing LXC 107 (MariaDB) - just added one database
+- Uses existing LXC 106 (Nginx) - just added one virtual host
+- All services on same network (192.168.5.0/24)
+- Easy to manage via Proxmox web UI
+
+**Access:**
+- Frontend: http://192.168.5.17 or http://messages.local
+- API: http://192.168.5.17/api
+- Proxmox: https://192.168.5.15:8006
+
+This deployment is optimized for your t730 host's limited RAM while providing full functionality!

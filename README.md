@@ -22,8 +22,53 @@ The project uses a **hybrid microservices architecture**:
 - **API Gateway**: Node.js + Express (authentication & routing)
 - **Telegram Backend**: Python + Telethon (official API)
 - **WhatsApp Backend**: Node.js + Baileys (web protocol)
-- **Database**: MySQL 8.0+ with InnoDB
-- **Optional**: Redis for session caching
+- **Database**: MariaDB/MySQL 10.11+
+- **Web Server**: Nginx (reverse proxy)
+
+## Deployment Architecture (Proxmox t730)
+
+```
+proxmox_t730 (192.168.5.15)
+│
+├── [EXISTING] LXC 106 - Nginx (192.168.5.17)
+│   └── Reverse proxy for all services
+│
+├── [EXISTING] LXC 107 - MariaDB (192.168.5.20)
+│   └── Shared database server
+│
+├── [NEW] LXC 113 - Telegram Backend (192.168.5.113:8001)
+│   ├── Python 3.11 + Telethon
+│   └── 1GB RAM, 1 core, 15GB disk
+│
+├── [NEW] LXC 114 - WhatsApp Backend (192.168.5.114:8002)
+│   ├── Node.js 18 + Baileys
+│   └── 1GB RAM, 1 core, 15GB disk
+│
+└── [NEW] LXC 115 - API Gateway + Frontend (192.168.5.115:3000)
+    ├── Node.js 18 + Express + React
+    └── 1GB RAM, 1 core, 10GB disk
+```
+
+## Quick Start
+
+### For Proxmox Infrastructure
+
+**Deployment Guide:** 👉 **[PROXMOX_DEPLOYMENT.md](./PROXMOX_DEPLOYMENT.md)** 👈
+
+This guide provides step-by-step instructions for deploying on your existing **proxmox_t730** infrastructure:
+
+**What it does:**
+- Uses your existing LXC 107 (MariaDB) - adds one new database
+- Uses your existing LXC 106 (Nginx) - adds one virtual host
+- Creates 3 new lightweight LXC containers
+- Optimized for limited RAM (only 3GB total needed)
+
+**Prerequisites:**
+- Proxmox VE with existing Nginx and MariaDB
+- Telegram API credentials from https://my.telegram.org
+- Basic command line knowledge
+
+**Estimated setup time:** 1-2 hours
 
 ## Project Structure
 
@@ -47,148 +92,10 @@ multi-account-multi-platform/
 │   └── sessions/
 ├── database/                # Database schema
 │   └── schema.sql
-├── docker-compose.yml       # Docker orchestration
 ├── .env.example            # Environment template
-└── ONBOARDING.md           # Detailed documentation
+├── ONBOARDING.md           # Comprehensive project documentation
+└── PROXMOX_DEPLOYMENT.md   # Step-by-step deployment guide
 ```
-
-## Quick Start
-
-### Choose Your Deployment Method
-
-**📌 Recommended for Your Setup:**
-
-If you have **existing Proxmox + MySQL + Nginx infrastructure**, use:
-👉 **[DEPLOYMENT_EXISTING_INFRA.md](./DEPLOYMENT_EXISTING_INFRA.md)** 👈
-
-This guide shows how to:
-- Create only 3 new LXC containers (Telegram, WhatsApp, API)
-- Use your existing MySQL server
-- Use your existing Nginx reverse proxy
-- Minimal new resources needed (4GB RAM, 6 CPU cores, 26GB storage)
-
----
-
-### Prerequisites
-
-- **Node.js 18+** (for WhatsApp backend & API gateway & frontend)
-- **Python 3.11+** (for Telegram backend)
-- **MySQL 8.0+** (or use Docker)
-- **Git**
-- **Telegram API credentials** from https://my.telegram.org
-
-### Option 1: Using Existing MySQL (Fresh Server)
-
-#### 1. Clone the Repository
-
-```bash
-git clone https://github.com/dominggo/multi-account-multi-platform.git
-cd multi-account-multi-platform
-```
-
-#### 2. Set Up Environment
-
-```bash
-cp .env.example .env
-# Edit .env with your actual credentials
-```
-
-Required configuration:
-- MySQL database credentials
-- Telegram API ID and Hash (from https://my.telegram.org)
-- JWT and session secrets (use `openssl rand -base64 32`)
-
-#### 3. Set Up Database
-
-```bash
-# Login to MySQL
-mysql -u root -p
-
-# Create database and user
-CREATE DATABASE messaging_platform CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;
-CREATE USER 'msgplatform'@'localhost' IDENTIFIED BY 'your_password';
-GRANT ALL PRIVILEGES ON messaging_platform.* TO 'msgplatform'@'localhost';
-FLUSH PRIVILEGES;
-
-# Import schema
-mysql -u msgplatform -p messaging_platform < database/schema.sql
-```
-
-#### 4. Install Dependencies
-
-```bash
-# Telegram backend (Python)
-cd backend-telegram
-pip install -r requirements.txt
-cd ..
-
-# WhatsApp backend (Node.js)
-cd backend-whatsapp
-npm install
-cd ..
-
-# API Gateway (Node.js)
-cd backend-api
-npm install
-cd ..
-
-# Frontend (React)
-cd frontend
-npm install
-cd ..
-```
-
-#### 5. Start Services
-
-Open **4 separate terminals**:
-
-```bash
-# Terminal 1: Telegram Backend
-cd backend-telegram
-cp .env.example .env  # Edit with your config
-python main.py
-
-# Terminal 2: WhatsApp Backend
-cd backend-whatsapp
-cp .env.example .env  # Edit with your config
-npm run dev
-
-# Terminal 3: API Gateway
-cd backend-api
-cp .env.example .env  # Edit with your config
-npm run dev
-
-# Terminal 4: Frontend
-cd frontend
-npm run dev
-```
-
-#### 6. Access the Application
-
-Open your browser and navigate to:
-- **Frontend**: http://localhost:5173
-- **API Gateway**: http://localhost:3000
-- **Telegram Backend**: http://localhost:8001
-- **WhatsApp Backend**: http://localhost:8002
-
-### Option 2: Using Docker Compose
-
-```bash
-# Copy environment file
-cp .env.example .env
-# Edit .env with your credentials
-
-# Start all services
-docker-compose up -d
-
-# View logs
-docker-compose logs -f
-
-# Stop all services
-docker-compose down
-```
-
-Services will be available at the same ports as Option 1.
 
 ## Configuration
 
@@ -202,23 +109,27 @@ Services will be available at the same ports as Option 1.
 
 ### Environment Variables
 
-See `.env.example` for all available configuration options. Key variables:
+Key configuration in each service's `.env` file:
 
 - `TELEGRAM_API_ID` - Your Telegram API ID
 - `TELEGRAM_API_HASH` - Your Telegram API Hash
-- `DB_*` - Database connection settings
+- `DB_HOST` - MariaDB server IP (192.168.5.20)
+- `DB_NAME` - Database name (messaging_platform)
 - `JWT_SECRET` - Secret for JWT tokens
 - `SESSION_SECRET` - Secret for sessions
+
+See each service's `.env.example` for full configuration options.
 
 ## Usage
 
 ### Adding a Telegram Account
 
-1. Navigate to the web interface
+1. Navigate to the web interface (http://192.168.5.17)
 2. Click "Add Account" → Select "Telegram"
 3. Enter phone number with country code (e.g., +1234567890)
 4. Enter the verification code sent to your Telegram
 5. If 2FA is enabled, enter your password
+6. Account connected!
 
 ### Adding a WhatsApp Account
 
@@ -242,7 +153,7 @@ The keep-alive system automatically sends messages to prevent account deactivati
 
 1. **Never commit `.env` files** or session data to version control
 2. **Use strong passwords** for database and JWT secrets
-3. **Enable HTTPS** in production (use nginx reverse proxy)
+3. **Enable HTTPS** in production (use Nginx with SSL)
 4. **WhatsApp risk**: Unofficial clients may violate ToS and result in bans
 5. **Telegram**: Use official API only, respect rate limits
 6. **Database**: Use encrypted connections in production
@@ -257,7 +168,7 @@ The keep-alive system automatically sends messages to prevent account deactivati
 - Service interruptions
 - Terms of Service violations
 
-**Recommendations**:
+**Recommendations:**
 - Use dedicated phone numbers (not personal accounts)
 - Consider WhatsApp Business API for production
 - Monitor account health regularly
@@ -270,85 +181,102 @@ The keep-alive system automatically sends messages to prevent account deactivati
 
 ## Troubleshooting
 
-### Database Connection Failed
+### MariaDB Connection Failed
 
 ```bash
-# Check MySQL is running
-systemctl status mysql  # Linux
-# or
-brew services list  # macOS
-
-# Test connection
-mysql -u msgplatform -p -h localhost messaging_platform
+# Test connection from new LXC
+pct enter 113  # or 114, 115
+mysql -h 192.168.5.20 -u msgplatform -p messaging_platform
 ```
 
 ### Telegram API Errors
 
 - Verify API credentials at https://my.telegram.org
-- Ensure `TELEGRAM_API_ID` is a number, not a string
-- Check session files in `backend-telegram/sessions/`
+- Ensure `TELEGRAM_API_ID` is correctly set in `.env`
+- Check session files in `sessions/` directory
 
 ### WhatsApp QR Code Not Generated
 
-- Check backend logs: `npm run dev` output
-- Delete old session files in `backend-whatsapp/sessions/`
+- Check backend logs: `pct enter 114` then `pm2 logs whatsapp-backend`
+- Delete old session files in `sessions/` directory
 - Ensure only one instance per phone number
 
-### Port Already in Use
+### Service Not Starting
 
 ```bash
-# Find process using port (example: 3000)
-lsof -i :3000  # macOS/Linux
-netstat -ano | findstr :3000  # Windows
+# Check service status
+pct enter 113
+systemctl status telegram-backend
+journalctl -u telegram-backend -f
 
-# Kill the process or change port in .env
+# For Node.js services (WhatsApp, API)
+pct enter 114
+pm2 status
+pm2 logs whatsapp-backend
 ```
 
-## Development
+## Maintenance
 
-### Running Tests
+### Update Services
 
 ```bash
-# Backend tests (when implemented)
-cd backend-api
-npm test
+# Update Telegram backend
+pct enter 113
+cd /opt/messaging-platform/telegram
+git pull
+source venv/bin/activate
+pip install -r requirements.txt
+systemctl restart telegram-backend
+exit
 
-# Frontend tests
-cd frontend
-npm test
+# Update WhatsApp backend
+pct enter 114
+cd /opt/messaging-platform/whatsapp
+git pull && npm install && npm run build
+pm2 restart whatsapp-backend
+exit
+
+# Update API Gateway
+pct enter 115
+cd /opt/messaging-platform/api
+git pull && npm install && npm run build
+pm2 restart api-gateway
+exit
 ```
 
-### Building for Production
+### Check Logs
 
 ```bash
-# Build all services
-cd backend-api && npm run build
-cd ../backend-whatsapp && npm run build
-cd ../frontend && npm run build
+# Telegram
+pct enter 113 && journalctl -u telegram-backend -f
+
+# WhatsApp
+pct enter 114 && pm2 logs whatsapp-backend
+
+# API Gateway
+pct enter 115 && pm2 logs api-gateway
+
+# Nginx
+pct enter 106 && tail -f /var/log/nginx/messaging-error.log
 ```
 
-### Code Quality
+### Backup
 
 ```bash
-# Lint backend
-cd backend-api && npm run lint
-cd backend-whatsapp && npm run lint
+# Backup all containers
+vzdump 113 114 115 --storage local --mode snapshot --compress zstd
 
-# Format code (if configured)
-npm run format
+# Backup database
+pct enter 107
+mysqldump -u msgplatform -p messaging_platform > /backup/messaging_$(date +%Y%m%d).sql
+exit
 ```
 
 ## Documentation
 
 ### Main Guides
-- **[ONBOARDING.md](./ONBOARDING.md)** - Comprehensive project documentation with architecture
-- **[QUICKSTART.md](./QUICKSTART.md)** - 10-minute quick setup guide
-
-### Deployment Guides
-- **[DEPLOYMENT_EXISTING_INFRA.md](./DEPLOYMENT_EXISTING_INFRA.md)** - ⭐ Use existing Proxmox/MySQL/Nginx (Recommended)
-- **[PROXMOX_DEPLOYMENT.md](./PROXMOX_DEPLOYMENT.md)** - Full Proxmox setup with new containers
-- **[DEPLOYMENT_COMPARISON.md](./DEPLOYMENT_COMPARISON.md)** - Compare deployment options
-- **[docker-compose.yml](./docker-compose.yml)** - Docker deployment (for cloud/non-Proxmox)
+- **[ONBOARDING.md](./ONBOARDING.md)** - Comprehensive project documentation with architecture diagrams
+- **[PROXMOX_DEPLOYMENT.md](./PROXMOX_DEPLOYMENT.md)** - Step-by-step deployment guide for Proxmox
 
 ### Service Documentation
 - **[backend-telegram/README.md](./backend-telegram/README.md)** - Telegram service details
@@ -358,16 +286,17 @@ npm run format
 
 ### Phase 1: MVP (Current)
 - [x] Multi-account authentication (Telegram & WhatsApp)
-- [x] Basic messaging
+- [x] Basic messaging APIs
 - [x] Database schema
-- [ ] Web interface implementation
-- [ ] Keep-alive system
+- [x] Deployment guide for Proxmox
+- [ ] Full web interface implementation
+- [ ] Keep-alive automation system
 
 ### Phase 2: Enhanced Features
-- [ ] Media file support
+- [ ] Media file support (images, videos, documents)
 - [ ] Group chat management
-- [ ] Account dashboard
-- [ ] Usage statistics
+- [ ] Account status dashboard
+- [ ] Usage statistics per account
 
 ### Phase 3: Advanced Features
 - [ ] Auto-reply templates
@@ -403,8 +332,8 @@ Users are responsible for:
 ## Support
 
 - **Issues**: https://github.com/dominggo/multi-account-multi-platform/issues
-- **Documentation**: See `docs/` folder and ONBOARDING.md
-- **Email**: [Your email]
+- **Documentation**: See ONBOARDING.md and PROXMOX_DEPLOYMENT.md
+- **Infrastructure**: Based on proxmox_t730 (see allhost.md for full details)
 
 ## Acknowledgments
 
@@ -416,8 +345,9 @@ Users are responsible for:
 
 ---
 
-**Status**: 🚧 In Development
+**Status**: 🚧 Ready for Deployment
 **Version**: 1.0.0
 **Last Updated**: 2026-01-12
+**Target Infrastructure**: Proxmox t730 (192.168.5.15)
 
-For detailed setup instructions and architecture documentation, see [ONBOARDING.md](./ONBOARDING.md).
+For detailed setup instructions, see [PROXMOX_DEPLOYMENT.md](./PROXMOX_DEPLOYMENT.md).
