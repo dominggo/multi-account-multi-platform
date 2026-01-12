@@ -4,7 +4,9 @@
       "Bash(git init:*)",
       "Bash(gh repo create:*)",
       "Bash(git add:*)",
-      "Bash(git commit -m \"$\\(cat <<''EOF''\nInitial commit: Set up multi-account-multi-platform repository\n\n- Add README.md with project overview\n- Add .gitignore with common patterns\n- Add ONBOARDING.md with setup guide and best practices\n\n🤖 Generated with [Claude Code]\\(https://claude.com/claude-code\\)\n\nCo-Authored-By: Claude Sonnet 4.5 <noreply@anthropic.com>\nEOF\n\\)\")"
+      "Bash(git commit -m \"$\\(cat <<''EOF''\nInitial commit: Set up multi-account-multi-platform repository\n\n- Add README.md with project overview\n- Add .gitignore with common patterns\n- Add ONBOARDING.md with setup guide and best practices\n\n🤖 Generated with [Claude Code]\\(https://claude.com/claude-code\\)\n\nCo-Authored-By: Claude Sonnet 4.5 <noreply@anthropic.com>\nEOF\n\\)\")",
+      "Bash(git push:*)",
+      "Bash(npm create:*)"
     ]
   }
 }
