@@ -54,6 +54,21 @@ multi-account-multi-platform/
 
 ## Quick Start
 
+### Choose Your Deployment Method
+
+**📌 Recommended for Your Setup:**
+
+If you have **existing Proxmox + MySQL + Nginx infrastructure**, use:
+👉 **[DEPLOYMENT_EXISTING_INFRA.md](./DEPLOYMENT_EXISTING_INFRA.md)** 👈
+
+This guide shows how to:
+- Create only 3 new LXC containers (Telegram, WhatsApp, API)
+- Use your existing MySQL server
+- Use your existing Nginx reverse proxy
+- Minimal new resources needed (4GB RAM, 6 CPU cores, 26GB storage)
+
+---
+
 ### Prerequisites
 
 - **Node.js 18+** (for WhatsApp backend & API gateway & frontend)
@@ -62,7 +77,7 @@ multi-account-multi-platform/
 - **Git**
 - **Telegram API credentials** from https://my.telegram.org
 
-### Option 1: Using Existing MySQL
+### Option 1: Using Existing MySQL (Fresh Server)
 
 #### 1. Clone the Repository
 
@@ -325,9 +340,19 @@ npm run format
 
 ## Documentation
 
-- **[ONBOARDING.md](./ONBOARDING.md)** - Comprehensive project documentation
-- **[backend-telegram/README.md](./backend-telegram/README.md)** - Telegram service docs
-- **[backend-whatsapp/README.md](./backend-whatsapp/README.md)** - WhatsApp service docs
+### Main Guides
+- **[ONBOARDING.md](./ONBOARDING.md)** - Comprehensive project documentation with architecture
+- **[QUICKSTART.md](./QUICKSTART.md)** - 10-minute quick setup guide
+
+### Deployment Guides
+- **[DEPLOYMENT_EXISTING_INFRA.md](./DEPLOYMENT_EXISTING_INFRA.md)** - ⭐ Use existing Proxmox/MySQL/Nginx (Recommended)
+- **[PROXMOX_DEPLOYMENT.md](./PROXMOX_DEPLOYMENT.md)** - Full Proxmox setup with new containers
+- **[DEPLOYMENT_COMPARISON.md](./DEPLOYMENT_COMPARISON.md)** - Compare deployment options
+- **[docker-compose.yml](./docker-compose.yml)** - Docker deployment (for cloud/non-Proxmox)
+
+### Service Documentation
+- **[backend-telegram/README.md](./backend-telegram/README.md)** - Telegram service details
+- **[backend-whatsapp/README.md](./backend-whatsapp/README.md)** - WhatsApp service details
 
 ## Roadmap
 
