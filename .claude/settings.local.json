@@ -8,7 +8,8 @@
       "Bash(git push:*)",
       "Bash(npm create:*)",
       "Bash(git commit -m \"$\\(cat <<''EOF''\nfeat: Complete multi-account messaging platform MVP setup\n\nImplement hybrid architecture with Python, Node.js, and React:\n\nBackend Services:\n- Python/Telethon backend for Telegram \\(official API\\)\n- Node.js/Baileys backend for WhatsApp \\(web protocol\\)\n- Node.js/Express API gateway for authentication and routing\n\nFrontend:\n- React + TypeScript + Vite\n- Tailwind CSS for styling\n- Multi-tab interface foundation\n\nDatabase:\n- Complete MySQL schema with 8 tables\n- Support for accounts, sessions, messages, contacts\n- Keep-alive logging and audit trails\n- Views and stored procedures for common operations\n\nInfrastructure:\n- Docker Compose for containerized deployment\n- Environment configuration templates for all services\n- Comprehensive documentation and README\n\nFeatures:\n- Multi-account authentication flow\n- Real-time messaging via WebSocket/Socket.io\n- Session persistence and management\n- Keep-alive system foundation\n- Security middleware \\(helmet, rate limiting, JWT\\)\n\nDocumentation:\n- Detailed ONBOARDING.md with architecture diagrams\n- Service-specific README files\n- Setup instructions for local and Docker deployment\n- Troubleshooting guide\n\n🤖 Generated with [Claude Code]\\(https://claude.com/claude-code\\)\n\nCo-Authored-By: Claude Sonnet 4.5 <noreply@anthropic.com>\nEOF\n\\)\")",
-      "Bash(git commit:*)"
+      "Bash(git commit:*)",
+      "Bash(ssh:*)"
     ]
   }
 }

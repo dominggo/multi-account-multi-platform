@@ -74,11 +74,12 @@ interface AuthRequest extends Request {
   userRole?: string;
 }
 
-async function authMiddleware(req: AuthRequest, res: Response, next: NextFunction) {
+async function authMiddleware(req: AuthRequest, res: Response, next: NextFunction): Promise<void> {
   const token = req.headers.authorization?.replace('Bearer ', '');
 
   if (!token) {
-    return res.status(401).json({ error: 'No token provided' });
+    res.status(401).json({ error: 'No token provided' });
+    return;
   }
 
   try {
@@ -87,7 +88,7 @@ async function authMiddleware(req: AuthRequest, res: Response, next: NextFunctio
     req.userRole = decoded.role;
     next();
   } catch (error) {
-    return res.status(401).json({ error: 'Invalid token' });
+    res.status(401).json({ error: 'Invalid token' });
   }
 }
 
@@ -104,7 +105,7 @@ app.get('/', (req: Request, res: Response) => {
 });
 
 // Auth routes
-app.post('/api/auth/login', async (req: Request, res: Response) => {
+app.post('/api/auth/login', async (req: Request, res: Response): Promise<void> => {
   try {
     const { username, password } = req.body;
 
@@ -114,24 +115,27 @@ app.post('/api/auth/login', async (req: Request, res: Response) => {
     );
 
     if (rows.length === 0) {
-      return res.status(401).json({ error: 'Invalid credentials' });
+      res.status(401).json({ error: 'Invalid credentials' });
+      return;
     }
 
     const user = rows[0];
     const validPassword = await bcrypt.compare(password, user.password_hash);
 
     if (!validPassword) {
-      return res.status(401).json({ error: 'Invalid credentials' });
+      res.status(401).json({ error: 'Invalid credentials' });
+      return;
     }
 
     // Update last login
     await pool.query('UPDATE users SET last_login = NOW() WHERE id = ?', [user.id]);
 
     // Generate JWT
+    const expiresIn = process.env.JWT_EXPIRES_IN || '7d';
     const token = jwt.sign(
       { userId: user.id, role: user.role },
       JWT_SECRET,
-      { expiresIn: process.env.JWT_EXPIRES_IN || '7d' }
+      { expiresIn }
     );
 
     res.json({
