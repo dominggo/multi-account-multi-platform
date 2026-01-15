@@ -12,7 +12,6 @@ import makeWASocket, {
   DisconnectReason,
   useMultiFileAuthState,
   WASocket,
-  proto,
   isJidBroadcast,
   isJidStatusBroadcast,
 } from '@whiskeysockets/baileys';
@@ -95,7 +94,6 @@ function getSessionDir(phone: string): string {
  * Create WhatsApp socket connection
  */
 async function createWhatsAppSocket(phoneNumber: string): Promise<WASocket> {
-  const sanitizedPhone = sanitizePhoneNumber(phoneNumber);
   const sessionDir = getSessionDir(phoneNumber);
 
   // Create auth state
@@ -168,7 +166,7 @@ async function createWhatsAppSocket(phoneNumber: string): Promise<WASocket> {
   sock.ev.on('creds.update', saveCreds);
 
   // Event: New messages
-  sock.ev.on('messages.upsert', async ({ messages, type }) => {
+  sock.ev.on('messages.upsert', async ({ messages }) => {
     for (const msg of messages) {
       if (!msg.message) continue;
 
@@ -204,7 +202,7 @@ async function createWhatsAppSocket(phoneNumber: string): Promise<WASocket> {
 /**
  * Health check
  */
-app.get('/', (req: Request, res: Response) => {
+app.get('/', (_req: Request, res: Response) => {
   res.json({
     service: 'WhatsApp Backend',
     status: 'running',
@@ -216,21 +214,23 @@ app.get('/', (req: Request, res: Response) => {
 /**
  * Start authentication (generate QR code)
  */
-app.post('/auth/start', async (req: Request, res: Response) => {
+app.post('/auth/start', async (req: Request, res: Response): Promise<void> => {
   try {
     const { phone_number } = req.body;
 
     if (!phone_number) {
-      return res.status(400).json({ error: 'phone_number is required' });
+      res.status(400).json({ error: 'phone_number is required' });
+      return;
     }
 
     // Check if already connected
     if (activeSessions.has(phone_number)) {
-      return res.json({
+      res.json({
         success: true,
         message: 'Already connected',
         status: 'connected',
       });
+      return;
     }
 
     // Create socket to trigger QR generation
@@ -256,12 +256,13 @@ app.post('/auth/start', async (req: Request, res: Response) => {
 /**
  * Get QR code for a phone number
  */
-app.get('/auth/qr/:phone_number', (req: Request, res: Response) => {
+app.get('/auth/qr/:phone_number', (req: Request, res: Response): void => {
   const { phone_number } = req.params;
   const qrCode = sessionQRCodes.get(phone_number);
 
   if (!qrCode) {
-    return res.status(404).json({ error: 'QR code not found or session already connected' });
+    res.status(404).json({ error: 'QR code not found or session already connected' });
+    return;
   }
 
   res.json({
@@ -273,16 +274,17 @@ app.get('/auth/qr/:phone_number', (req: Request, res: Response) => {
 /**
  * Get account status
  */
-app.get('/account/status/:phone_number', async (req: Request, res: Response) => {
+app.get('/account/status/:phone_number', async (req: Request, res: Response): Promise<void> => {
   try {
     const { phone_number } = req.params;
     const sock = activeSessions.get(phone_number);
 
     if (!sock) {
-      return res.json({
+      res.json({
         phone_number,
         is_connected: false,
       });
+      return;
     }
 
     // Get user info
@@ -305,20 +307,22 @@ app.get('/account/status/:phone_number', async (req: Request, res: Response) => 
 /**
  * Send a message
  */
-app.post('/message/send', async (req: Request, res: Response) => {
+app.post('/message/send', async (req: Request, res: Response): Promise<void> => {
   try {
     const { phone_number, chat_id, message } = req.body;
 
     if (!phone_number || !chat_id || !message) {
-      return res.status(400).json({
+      res.status(400).json({
         error: 'phone_number, chat_id, and message are required',
       });
+      return;
     }
 
     const sock = activeSessions.get(phone_number);
 
     if (!sock) {
-      return res.status(404).json({ error: 'Account not connected' });
+      res.status(404).json({ error: 'Account not connected' });
+      return;
     }
 
     // Send message
@@ -340,13 +344,14 @@ app.post('/message/send', async (req: Request, res: Response) => {
 /**
  * Get chats
  */
-app.get('/chats/:phone_number', async (req: Request, res: Response) => {
+app.get('/chats/:phone_number', async (req: Request, res: Response): Promise<void> => {
   try {
     const { phone_number } = req.params;
     const sock = activeSessions.get(phone_number);
 
     if (!sock) {
-      return res.status(404).json({ error: 'Account not connected' });
+      res.status(404).json({ error: 'Account not connected' });
+      return;
     }
 
     // Get chats (this is a simplified version - you may need to implement proper chat retrieval)
