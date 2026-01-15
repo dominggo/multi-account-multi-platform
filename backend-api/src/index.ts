@@ -131,11 +131,10 @@ app.post('/api/auth/login', async (req: Request, res: Response): Promise<void> =
     await pool.query('UPDATE users SET last_login = NOW() WHERE id = ?', [user.id]);
 
     // Generate JWT
-    const expiresIn = process.env.JWT_EXPIRES_IN || '7d';
     const token = jwt.sign(
       { userId: user.id, role: user.role },
       JWT_SECRET,
-      { expiresIn }
+      { expiresIn: '7d' }
     );
 
     res.json({
