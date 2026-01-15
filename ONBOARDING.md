@@ -1,9 +1,92 @@
-# Multi-Account Messaging Platform - Project Onboarding
+# Multi-Account Messaging Platform - Deployment Progress
 
 **Project Name:** Unified Telegram & WhatsApp Web Client
 **Date Created:** 2026-01-08
-**Status:** 📋 Planning Phase
+**Last Updated:** 2026-01-15
+**Status:** 🔄 Phase 2 - Telegram Backend Deployment (In Progress)
 **Purpose:** Web-based multi-account messaging client for travelers with multiple international SIM cards
+
+---
+
+## 🚀 CURRENT DEPLOYMENT STATUS
+
+### Infrastructure (Proxmox t730 - 192.168.5.15)
+
+**Existing Resources (DO NOT MODIFY)**
+- **LXC 106**: Nginx Reverse Proxy (192.168.5.17) - ✅ Active
+- **LXC 107**: MariaDB 10.11 (192.168.5.20) - ✅ Active
+
+**New LXC Containers (Created for this project)**
+- **LXC 113**: Telegram Backend - Python 3.11 + Telethon (192.168.5.113:8001) - ✅ Created, In Setup
+- **LXC 114**: WhatsApp Backend - Node.js 18 + Baileys (192.168.5.114:8002) - ⏳ Pending
+- **LXC 115**: API Gateway + Frontend - Node.js 18 + React (192.168.5.115:3000) - ⏳ Pending
+
+### Database Configuration (LXC 107)
+- **Database**: `messaging_platform` - ✅ Created
+- **User**: `msgplatform` - ✅ Created
+- **Password**: `PUNDEKpundek!1`
+- **Host**: `192.168.5.20:3306`
+- **Tables**: 8 tables, 2 views, 2 stored procedures - ✅ Imported
+
+### Current Progress
+
+**✅ Phase 1: Database Setup - COMPLETED**
+- [x] Created database and user
+- [x] Imported complete schema
+- [x] Verified all tables and views
+
+**🔄 Phase 2: Telegram Backend (LXC 113) - IN PROGRESS**
+- [x] Created LXC 113 (Debian 12, 1GB RAM, 1 core, 15GB disk)
+- [x] Installed Python 3.11 and system dependencies
+- [x] Created application directory `/opt/telegram-backend`
+- [x] Set up Python virtual environment
+- [x] Installed Python packages (telethon, fastapi, uvicorn, etc.)
+- [x] Created `main.py` (FastAPI + Telethon integration)
+- [x] Created `requirements.txt`
+- [ ] **NEXT STEP**: Configure `.env` file with Telegram API credentials
+- [ ] Test backend startup
+- [ ] Create systemd service
+- [ ] Verify health endpoint
+
+**Current Location**: Inside LXC 113 at `/opt/telegram-backend`
+
+**Next Action**: Edit `.env` file with your Telegram API credentials from https://my.telegram.org
+
+**⏳ Phase 3-6**: WhatsApp backend, API Gateway, Nginx config, Testing - All pending
+
+---
+
+## 📋 Quick Reference for Resuming Work
+
+### Access LXC Containers
+```bash
+# SSH to Proxmox
+ssh root@192.168.5.15
+
+# Enter containers
+pct enter 107  # MariaDB
+pct enter 113  # Telegram Backend (CURRENT)
+```
+
+### Current Working Directory (LXC 113)
+```bash
+cd /opt/telegram-backend
+source venv/bin/activate  # Activate Python environment
+```
+
+### Files Created in LXC 113
+- `/opt/telegram-backend/main.py` - FastAPI application
+- `/opt/telegram-backend/requirements.txt` - Python dependencies
+- `/opt/telegram-backend/.env` - Configuration (needs Telegram API credentials)
+- `/opt/telegram-backend/venv/` - Python virtual environment
+
+### Next Steps
+1. Edit `/opt/telegram-backend/.env` with Telegram credentials
+2. Test: `python main.py`
+3. Create systemd service
+4. Move to LXC 114 creation
+
+---
 
 ---
 
