@@ -1,13 +1,14 @@
-import { X, Plus, LayoutDashboard, MessageCircle, LogOut } from 'lucide-react';
+import { X, Plus, LayoutDashboard, MessageCircle, LogOut, Key } from 'lucide-react';
 import { useStore } from '../store';
 import { TabData } from '../types';
+import { ChangePasswordModal } from './ChangePasswordModal';
 
 interface LayoutProps {
   children: React.ReactNode;
 }
 
 export function Layout({ children }: LayoutProps) {
-  const { tabs, activeTabId, setActiveTab, removeTab, setShowAddAccountModal, logout, user } = useStore();
+  const { tabs, activeTabId, setActiveTab, removeTab, setShowAddAccountModal, setShowChangePasswordModal, logout, user } = useStore();
 
   const getTabIcon = (tab: TabData) => {
     if (tab.type === 'dashboard') {
@@ -40,7 +41,14 @@ export function Layout({ children }: LayoutProps) {
               Add Account
             </button>
             <div className="flex items-center gap-2 text-sm text-gray-600 dark:text-gray-300">
-              <span>{user?.username}</span>
+              <button
+                onClick={() => setShowChangePasswordModal(true)}
+                className="flex items-center gap-1 px-2 py-1 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-colors"
+                title="Change Password"
+              >
+                <Key className="w-3 h-3" />
+                <span>{user?.username}</span>
+              </button>
               <button
                 onClick={logout}
                 className="p-2 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-colors"
@@ -93,6 +101,9 @@ export function Layout({ children }: LayoutProps) {
       <main className="flex-1 overflow-auto">
         {children}
       </main>
+
+      {/* Change Password Modal */}
+      <ChangePasswordModal />
     </div>
   );
 }

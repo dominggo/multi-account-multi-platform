@@ -28,6 +28,8 @@ interface AppState {
   setShowAddAccountModal: (show: boolean) => void;
   editingAccount: Account | null;
   setEditingAccount: (account: Account | null) => void;
+  showChangePasswordModal: boolean;
+  setShowChangePasswordModal: (show: boolean) => void;
 }
 
 export const useStore = create<AppState>()(
@@ -83,6 +85,8 @@ export const useStore = create<AppState>()(
       setShowAddAccountModal: (show) => set({ showAddAccountModal: show }),
       editingAccount: null,
       setEditingAccount: (account) => set({ editingAccount: account }),
+      showChangePasswordModal: false,
+      setShowChangePasswordModal: (show) => set({ showChangePasswordModal: show }),
     }),
     {
       name: 'messaging-platform-storage',

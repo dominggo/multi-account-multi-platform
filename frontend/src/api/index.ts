@@ -32,6 +32,11 @@ export const login = async (username: string, password: string) => {
   return response.data;
 };
 
+export const changePassword = async (current_password: string, new_password: string) => {
+  const response = await api.post('/auth/change-password', { current_password, new_password });
+  return response.data;
+};
+
 // Accounts
 export const getAccounts = async (): Promise<{ accounts: Account[] }> => {
   const response = await api.get('/accounts');

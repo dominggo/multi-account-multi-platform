@@ -3,7 +3,7 @@ import { X, Send, MessageCircle, Phone, Loader2, Lock, RefreshCw, Wifi, WifiOff 
 import { io, Socket } from 'socket.io-client';
 import { useStore } from '../store';
 import { Platform } from '../types';
-import { telegramRequestCode, telegramVerifyCode, telegramVerifyPassword, whatsappStartAuth, whatsappGetQR } from '../api';
+import { telegramRequestCode, telegramVerifyCode, telegramVerifyPassword, whatsappStartAuth, whatsappGetQR, createAccount } from '../api';
 
 type Step = 'select-platform' | 'enter-phone' | 'verify-telegram' | 'verify-telegram-2fa' | 'verify-whatsapp';
 
@@ -57,26 +57,12 @@ export function AddAccountModal() {
         }
       });
 
-      socket.on('connection-status', (data: { phoneNumber: string; status?: string; isConnected?: boolean; qrCode?: string }) => {
+      socket.on('connection-status', async (data: { phoneNumber: string; status?: string; isConnected?: boolean; qrCode?: string }) => {
         if (data.phoneNumber === phoneNumber) {
           if (data.status === 'connected' || data.isConnected) {
             setConnectionStatus('connected');
-            // Add account and close modal
-            addAccount({
-              id: Date.now(),
-              phone_number: phoneNumber,
-              country_code: countryCode,
-              platform: 'whatsapp',
-              display_name: displayName || null,
-              status: 'active',
-              registered_at: new Date().toISOString(),
-              last_active: new Date().toISOString(),
-              keep_alive_enabled: true,
-              keep_alive_interval: 86400,
-              notes: notes || null,
-              last_topup: null,
-              last_message_at: null,
-            });
+            // Save account to database and close modal
+            await saveAccount('whatsapp');
             setTimeout(() => handleClose(), 1500);
           } else if (data.qrCode) {
             setQrCode(data.qrCode);
@@ -123,6 +109,59 @@ export function AddAccountModal() {
     setShowAddAccountModal(false);
   };
 
+  // Helper to save account to database and local store
+  const saveAccount = async (accountPlatform: Platform, userInfo?: { first_name?: string; name?: string }) => {
+    try {
+      // Save to database via API
+      const savedAccount = await createAccount({
+        phone_number: phoneNumber,
+        country_code: countryCode,
+        platform: accountPlatform,
+        display_name: displayName || userInfo?.first_name || userInfo?.name || undefined,
+        notes: notes || undefined,
+      });
+      // Add to local store
+      addAccount(savedAccount);
+    } catch (err: any) {
+      // If 409 conflict (already exists), just add to local store with temp data
+      if (err.response?.status === 409) {
+        addAccount({
+          id: Date.now(),
+          phone_number: phoneNumber,
+          country_code: countryCode,
+          platform: accountPlatform,
+          display_name: displayName || userInfo?.first_name || userInfo?.name || null,
+          status: 'active',
+          registered_at: new Date().toISOString(),
+          last_active: new Date().toISOString(),
+          keep_alive_enabled: true,
+          keep_alive_interval: 86400,
+          notes: notes || null,
+          last_topup: null,
+          last_message_at: null,
+        });
+      } else {
+        console.error('Failed to save account:', err);
+        // Still add to local store as fallback
+        addAccount({
+          id: Date.now(),
+          phone_number: phoneNumber,
+          country_code: countryCode,
+          platform: accountPlatform,
+          display_name: displayName || userInfo?.first_name || userInfo?.name || null,
+          status: 'active',
+          registered_at: new Date().toISOString(),
+          last_active: new Date().toISOString(),
+          keep_alive_enabled: true,
+          keep_alive_interval: 86400,
+          notes: notes || null,
+          last_topup: null,
+          last_message_at: null,
+        });
+      }
+    }
+  };
+
   const handleSelectPlatform = (p: Platform) => {
     setPlatform(p);
     setStep('enter-phone');
@@ -144,22 +183,8 @@ export function AddAccountModal() {
           setPhoneCodeHash(result.phone_code_hash);
           setStep('verify-telegram');
         } else if (result.already_connected) {
-          // Already connected
-          addAccount({
-            id: Date.now(),
-            phone_number: phoneNumber,
-            country_code: countryCode,
-            platform: 'telegram',
-            display_name: displayName || null,
-            status: 'active',
-            registered_at: new Date().toISOString(),
-            last_active: new Date().toISOString(),
-            keep_alive_enabled: true,
-            keep_alive_interval: 86400,
-            notes: notes || null,
-            last_topup: null,
-            last_message_at: null,
-          });
+          // Already connected - save to database
+          await saveAccount('telegram');
           handleClose();
         }
       } else if (platform === 'whatsapp') {
@@ -168,21 +193,7 @@ export function AddAccountModal() {
           setQrCode(result.qr_code);
           setStep('verify-whatsapp');
         } else if (result.status === 'connected') {
-          addAccount({
-            id: Date.now(),
-            phone_number: phoneNumber,
-            country_code: countryCode,
-            platform: 'whatsapp',
-            display_name: displayName || null,
-            status: 'active',
-            registered_at: new Date().toISOString(),
-            last_active: new Date().toISOString(),
-            keep_alive_enabled: true,
-            keep_alive_interval: 86400,
-            notes: notes || null,
-            last_topup: null,
-            last_message_at: null,
-          });
+          await saveAccount('whatsapp');
           handleClose();
         } else {
           // No QR yet, move to step anyway - socket will provide it
@@ -215,21 +226,7 @@ export function AddAccountModal() {
       }
 
       if (result.success || result.is_connected) {
-        addAccount({
-          id: Date.now(),
-          phone_number: phoneNumber,
-          country_code: countryCode,
-          platform: 'telegram',
-          display_name: displayName || result.user_info?.first_name || null,
-          status: 'active',
-          registered_at: new Date().toISOString(),
-          last_active: new Date().toISOString(),
-          keep_alive_enabled: true,
-          keep_alive_interval: 86400,
-          notes: notes || null,
-          last_topup: null,
-          last_message_at: null,
-        });
+        await saveAccount('telegram', result.user_info);
         handleClose();
       }
     } catch (err: any) {
@@ -252,21 +249,7 @@ export function AddAccountModal() {
       const result = await telegramVerifyPassword(phoneNumber, twoFaPassword);
 
       if (result.success) {
-        addAccount({
-          id: Date.now(),
-          phone_number: phoneNumber,
-          country_code: countryCode,
-          platform: 'telegram',
-          display_name: displayName || result.user_info?.first_name || null,
-          status: 'active',
-          registered_at: new Date().toISOString(),
-          last_active: new Date().toISOString(),
-          keep_alive_enabled: true,
-          keep_alive_interval: 86400,
-          notes: notes || null,
-          last_topup: null,
-          last_message_at: null,
-        });
+        await saveAccount('telegram', result.user_info);
         handleClose();
       }
     } catch (err: any) {
