@@ -110,11 +110,26 @@ pct enter 108 && cd /opt/api-gateway && git pull && npm install && systemctl res
 vzdump 108 113 114 --storage local --mode snapshot --compress zstd
 ```
 
+## Deployment Status
+
+All services deployed and operational on Proxmox t730 (192.168.5.15) as of January 2026.
+
+| Service | Container | IP | Port | Status |
+|---------|-----------|-----|------|--------|
+| Frontend | LXC 106 | 192.168.5.17 | 80 | ✅ Running |
+| API Gateway | LXC 108 | 192.168.5.108 | 3000 | ✅ Running |
+| Telegram Backend | LXC 113 | 192.168.5.113 | 8001 | ✅ Running |
+| WhatsApp Backend | LXC 114 | 192.168.5.114 | 8002 | ✅ Running |
+| Database | LXC 107 | 192.168.5.20 | 3306 | ✅ Running |
+
+**Access:** http://192.168.5.17
+
 ## License
 
 Educational and personal use only. Users are responsible for platform ToS compliance.
 
 ---
 
-**Status**: In Development
+**Status**: Deployed & Operational
 **Infrastructure**: Proxmox t730 (192.168.5.15)
+**Last Updated**: January 2026

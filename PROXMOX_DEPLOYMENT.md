@@ -2,35 +2,37 @@
 
 Deploy to your existing **proxmox_t730** infrastructure using existing MySQL and Nginx.
 
+> **Deployment Status:** ✅ All services deployed and operational (January 2026)
+
 ## Infrastructure Overview
 
 | Container | Purpose | IP | Status |
 |-----------|---------|-----|--------|
-| LXC 106 | Nginx Reverse Proxy | 192.168.5.17 | Existing |
-| LXC 107 | MariaDB 10.11 | 192.168.5.20 | Existing |
-| LXC 113 | Telegram Backend | 192.168.5.113:8001 | New |
-| LXC 114 | WhatsApp Backend | 192.168.5.114:8002 | New |
-| LXC 108 | API Gateway + Frontend | 192.168.5.108:3000 | New |
+| LXC 106 | Nginx Reverse Proxy | 192.168.5.17 | ✅ Running |
+| LXC 107 | MariaDB 10.11 | 192.168.5.20 | ✅ Running |
+| LXC 108 | API Gateway + Frontend | 192.168.5.108:3000 | ✅ Running |
+| LXC 113 | Telegram Backend | 192.168.5.113:8001 | ✅ Running |
+| LXC 114 | WhatsApp Backend | 192.168.5.114:8002 | ✅ Running |
 
 ## Architecture
 
 ```
 proxmox_t730 (192.168.5.15)
 │
-├── [EXISTING] LXC 106 - Nginx (192.168.5.17)
+├── [✅ RUNNING] LXC 106 - Nginx (192.168.5.17)
 │   └── Reverse proxy → /api/* → LXC 108
 │
-├── [EXISTING] LXC 107 - MariaDB (192.168.5.20)
+├── [✅ RUNNING] LXC 107 - MariaDB (192.168.5.20)
 │   └── Database: messaging_platform
 │
-├── [NEW] LXC 113 - Telegram Backend (192.168.5.113:8001)
+├── [✅ RUNNING] LXC 108 - API Gateway + Frontend (192.168.5.108:3000)
+│   └── Node.js 20 + Express + React
+│
+├── [✅ RUNNING] LXC 113 - Telegram Backend (192.168.5.113:8001)
 │   └── Python 3.11 + Telethon + FastAPI
 │
-├── [NEW] LXC 114 - WhatsApp Backend (192.168.5.114:8002)
-│   └── Node.js 20 + Baileys
-│
-└── [NEW] LXC 108 - API Gateway + Frontend (192.168.5.108:3000)
-    └── Node.js 20 + Express + React
+└── [✅ RUNNING] LXC 114 - WhatsApp Backend (192.168.5.114:8002)
+    └── Node.js 20 + Baileys
 ```
 
 ## Resource Requirements
@@ -355,10 +357,25 @@ mysqldump -u msgplatform -p messaging_platform > /backup/messaging_$(date +%Y%m%
 
 ## Summary
 
-| VMID | Hostname | IP | Purpose |
-|------|----------|-----|---------|
-| 106 | webserver | 192.168.5.17 | Nginx (existing) |
-| 107 | mariadb | 192.168.5.20 | MariaDB (existing) |
-| 108 | api-gateway | 192.168.5.108:3000 | API + Frontend |
-| 113 | telegram-backend | 192.168.5.113:8001 | Telegram |
-| 114 | whatsapp-backend | 192.168.5.114:8002 | WhatsApp |
+| VMID | Hostname | IP | Purpose | Status |
+|------|----------|-----|---------|--------|
+| 106 | webserver | 192.168.5.17 | Nginx | ✅ Running |
+| 107 | mariadb | 192.168.5.20 | MariaDB | ✅ Running |
+| 108 | api-gateway | 192.168.5.108:3000 | API + Frontend | ✅ Running |
+| 113 | telegram-backend | 192.168.5.113:8001 | Telegram | ✅ Running |
+| 114 | whatsapp-backend | 192.168.5.114:8002 | WhatsApp | ✅ Running |
+
+## Health Check Commands
+
+```bash
+# Verify all services are responding
+curl http://192.168.5.108:3000/    # API Gateway
+curl http://192.168.5.113:8001/    # Telegram Backend
+curl http://192.168.5.114:8002/    # WhatsApp Backend
+curl http://192.168.5.17/          # Frontend via Nginx
+
+# Check systemd service status
+ssh root@192.168.5.15 "pct exec 108 -- systemctl status api-gateway"
+ssh root@192.168.5.15 "pct exec 113 -- systemctl status telegram-backend"
+ssh root@192.168.5.15 "pct exec 114 -- systemctl status whatsapp-backend"
+```
