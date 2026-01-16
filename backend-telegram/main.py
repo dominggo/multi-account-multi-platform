@@ -353,6 +353,57 @@ async def disconnect_account(phone_number: str):
         logger.error(f"Error disconnecting {phone_number}: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+@app.get("/accounts/active")
+async def get_active_accounts():
+    """Get all active sessions in the backend"""
+    sessions = []
+
+    for phone_number, client in active_clients.items():
+        session_info = {
+            "phone_number": phone_number,
+            "is_connected": False,
+            "user_info": None,
+            "needs_password": False
+        }
+
+        try:
+            if client.is_connected():
+                me = await client.get_me()
+                if me:
+                    session_info["is_connected"] = True
+                    session_info["user_info"] = {
+                        "id": me.id,
+                        "first_name": me.first_name,
+                        "last_name": me.last_name,
+                        "username": me.username
+                    }
+                else:
+                    # Client connected but no user - likely needs 2FA
+                    session_info["needs_password"] = True
+        except Exception as e:
+            logger.warning(f"Error getting info for {phone_number}: {e}")
+            session_info["needs_password"] = True
+
+        sessions.append(session_info)
+
+    # Also check for session files without active clients
+    for session_file in SESSION_DIR.glob("*.session"):
+        phone = session_file.stem
+        if phone not in active_clients:
+            sessions.append({
+                "phone_number": phone,
+                "is_connected": False,
+                "user_info": None,
+                "needs_password": False,
+                "has_session_file": True
+            })
+
+    return {
+        "success": True,
+        "sessions": sessions,
+        "total": len(sessions)
+    }
+
 # ============================================================================
 # WebSocket for Real-time Messages
 # ============================================================================

@@ -400,6 +400,68 @@ app.post('/account/disconnect/:phone_number', async (req: Request, res: Response
   }
 });
 
+/**
+ * Get all active sessions
+ */
+app.get('/accounts/active', (_req: Request, res: Response) => {
+  const sessions: Array<{
+    phone_number: string;
+    is_connected: boolean;
+    has_qr_pending: boolean;
+    qr_code?: string;
+    user_info?: { id?: string; name?: string };
+  }> = [];
+
+  // Add connected sessions
+  for (const [phoneNumber, sock] of activeSessions) {
+    sessions.push({
+      phone_number: phoneNumber,
+      is_connected: true,
+      has_qr_pending: false,
+      user_info: {
+        id: sock.user?.id,
+        name: sock.user?.name,
+      },
+    });
+  }
+
+  // Add sessions waiting for QR scan
+  for (const [phoneNumber, qrCode] of sessionQRCodes) {
+    if (!activeSessions.has(phoneNumber)) {
+      sessions.push({
+        phone_number: phoneNumber,
+        is_connected: false,
+        has_qr_pending: true,
+        qr_code: qrCode,
+      });
+    }
+  }
+
+  // Check for session directories without active connections
+  if (fs.existsSync(SESSION_DIR)) {
+    const sessionDirs = fs.readdirSync(SESSION_DIR);
+    for (const dir of sessionDirs) {
+      const phoneNumber = dir;
+      if (!activeSessions.has(phoneNumber) && !sessionQRCodes.has(phoneNumber)) {
+        const sessionPath = path.join(SESSION_DIR, dir, 'creds.json');
+        if (fs.existsSync(sessionPath)) {
+          sessions.push({
+            phone_number: phoneNumber,
+            is_connected: false,
+            has_qr_pending: false,
+          });
+        }
+      }
+    }
+  }
+
+  res.json({
+    success: true,
+    sessions,
+    total: sessions.length,
+  });
+});
+
 // ============================================================================
 // Socket.io Events
 // ============================================================================

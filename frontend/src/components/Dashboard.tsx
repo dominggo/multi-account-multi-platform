@@ -9,12 +9,33 @@ import {
   RefreshCw,
   Send,
   Wifi,
-  WifiOff
+  WifiOff,
+  Lock,
+  QrCode,
+  X,
+  AlertCircle
 } from 'lucide-react';
 import { useStore } from '../store';
 import { Account } from '../types';
-import { getAccounts } from '../api';
+import { getAccounts, getTelegramActiveSessions, getWhatsAppActiveSessions, telegramDisconnect, whatsappDisconnect } from '../api';
 import { formatDistanceToNow } from 'date-fns';
+
+interface BackendSession {
+  phone_number: string;
+  is_connected: boolean;
+  user_info?: {
+    id?: number | string;
+    first_name?: string;
+    last_name?: string;
+    username?: string;
+    name?: string;
+  };
+  needs_password?: boolean;
+  has_session_file?: boolean;
+  has_qr_pending?: boolean;
+  qr_code?: string;
+  platform: 'telegram' | 'whatsapp';
+}
 
 export function Dashboard() {
   const {
@@ -26,9 +47,13 @@ export function Dashboard() {
   } = useStore();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [backendSessions, setBackendSessions] = useState<BackendSession[]>([]);
+  const [loadingBackend, setLoadingBackend] = useState(false);
+  const [disconnecting, setDisconnecting] = useState<string | null>(null);
 
   useEffect(() => {
     fetchAccounts();
+    fetchBackendSessions();
   }, []);
 
   const fetchAccounts = async () => {
@@ -92,6 +117,65 @@ export function Dashboard() {
     }
   };
 
+  const fetchBackendSessions = async () => {
+    setLoadingBackend(true);
+    const sessions: BackendSession[] = [];
+
+    try {
+      // Fetch Telegram sessions
+      const telegramData = await getTelegramActiveSessions();
+      if (telegramData.sessions) {
+        for (const session of telegramData.sessions) {
+          sessions.push({
+            ...session,
+            platform: 'telegram' as const,
+          });
+        }
+      }
+    } catch (err) {
+      console.error('Failed to fetch Telegram sessions:', err);
+    }
+
+    try {
+      // Fetch WhatsApp sessions
+      const whatsappData = await getWhatsAppActiveSessions();
+      if (whatsappData.sessions) {
+        for (const session of whatsappData.sessions) {
+          sessions.push({
+            ...session,
+            platform: 'whatsapp' as const,
+          });
+        }
+      }
+    } catch (err) {
+      console.error('Failed to fetch WhatsApp sessions:', err);
+    }
+
+    setBackendSessions(sessions);
+    setLoadingBackend(false);
+  };
+
+  const handleDisconnect = async (session: BackendSession) => {
+    if (!confirm(`Disconnect ${session.phone_number}? This will log out the session.`)) {
+      return;
+    }
+
+    setDisconnecting(session.phone_number);
+    try {
+      if (session.platform === 'telegram') {
+        await telegramDisconnect(session.phone_number);
+      } else {
+        await whatsappDisconnect(session.phone_number);
+      }
+      // Refresh sessions
+      await fetchBackendSessions();
+    } catch (err) {
+      console.error('Failed to disconnect:', err);
+    } finally {
+      setDisconnecting(null);
+    }
+  };
+
   const openAccountTab = (account: Account) => {
     addTab({
       id: `account-${account.id}`,
@@ -140,6 +224,47 @@ export function Dashboard() {
     );
   };
 
+  const getSessionStatusBadge = (session: BackendSession) => {
+    if (session.is_connected) {
+      return (
+        <span className="px-2 py-1 text-xs font-medium bg-green-100 text-green-700 dark:bg-green-900/30 dark:text-green-400 rounded-full flex items-center gap-1">
+          <Wifi className="w-3 h-3" />
+          Connected
+        </span>
+      );
+    }
+    if (session.needs_password) {
+      return (
+        <span className="px-2 py-1 text-xs font-medium bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-400 rounded-full flex items-center gap-1">
+          <Lock className="w-3 h-3" />
+          Needs 2FA
+        </span>
+      );
+    }
+    if (session.has_qr_pending) {
+      return (
+        <span className="px-2 py-1 text-xs font-medium bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400 rounded-full flex items-center gap-1">
+          <QrCode className="w-3 h-3" />
+          QR Pending
+        </span>
+      );
+    }
+    if (session.has_session_file) {
+      return (
+        <span className="px-2 py-1 text-xs font-medium bg-gray-100 text-gray-700 dark:bg-gray-700 dark:text-gray-300 rounded-full flex items-center gap-1">
+          <WifiOff className="w-3 h-3" />
+          Session Saved
+        </span>
+      );
+    }
+    return (
+      <span className="px-2 py-1 text-xs font-medium bg-gray-100 text-gray-700 dark:bg-gray-700 dark:text-gray-300 rounded-full flex items-center gap-1">
+        <WifiOff className="w-3 h-3" />
+        Disconnected
+      </span>
+    );
+  };
+
   const formatDate = (date: string | null) => {
     if (!date) return 'Never';
     try {
@@ -154,6 +279,10 @@ export function Dashboard() {
   const activeAccounts = accounts.filter(a => a.status === 'active').length;
   const telegramAccounts = accounts.filter(a => a.platform === 'telegram').length;
   const whatsappAccounts = accounts.filter(a => a.platform === 'whatsapp').length;
+
+  // Backend session stats
+  const connectedSessions = backendSessions.filter(s => s.is_connected).length;
+  const pendingSessions = backendSessions.filter(s => s.needs_password || s.has_qr_pending).length;
 
   if (loading) {
     return (
@@ -210,6 +339,95 @@ export function Dashboard() {
         <div className="mb-4 p-4 bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-800 rounded-lg">
           <p className="text-yellow-800 dark:text-yellow-200">{error}</p>
           <p className="text-sm text-yellow-600 dark:text-yellow-400 mt-1">Showing demo data</p>
+        </div>
+      )}
+
+      {/* Backend Sessions Section */}
+      {backendSessions.length > 0 && (
+        <div className="bg-white dark:bg-gray-800 rounded-lg shadow overflow-hidden mb-6">
+          <div className="px-4 py-3 border-b border-gray-200 dark:border-gray-700 flex justify-between items-center">
+            <div className="flex items-center gap-3">
+              <h2 className="text-lg font-semibold text-gray-900 dark:text-white">Backend Sessions</h2>
+              <span className="px-2 py-0.5 text-xs bg-blue-100 text-blue-700 dark:bg-blue-900/30 dark:text-blue-400 rounded-full">
+                {connectedSessions} connected
+              </span>
+              {pendingSessions > 0 && (
+                <span className="px-2 py-0.5 text-xs bg-yellow-100 text-yellow-700 dark:bg-yellow-900/30 dark:text-yellow-400 rounded-full">
+                  {pendingSessions} pending
+                </span>
+              )}
+            </div>
+            <button
+              onClick={fetchBackendSessions}
+              disabled={loadingBackend}
+              className="p-2 hover:bg-gray-100 dark:hover:bg-gray-700 rounded-lg transition-colors"
+            >
+              <RefreshCw className={`w-4 h-4 text-gray-500 ${loadingBackend ? 'animate-spin' : ''}`} />
+            </button>
+          </div>
+
+          <div className="p-4">
+            <div className="flex items-start gap-3 p-3 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg mb-4">
+              <AlertCircle className="w-5 h-5 text-blue-600 dark:text-blue-400 flex-shrink-0 mt-0.5" />
+              <p className="text-sm text-blue-700 dark:text-blue-300">
+                These are active sessions in the backend services. Sessions shown here are connected or have saved credentials.
+              </p>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+              {backendSessions.map((session) => (
+                <div
+                  key={`${session.platform}-${session.phone_number}`}
+                  className="border border-gray-200 dark:border-gray-700 rounded-lg p-4"
+                >
+                  <div className="flex items-start justify-between mb-3">
+                    <div className="flex items-center gap-3">
+                      <div className={`w-10 h-10 rounded-full flex items-center justify-center ${
+                        session.platform === 'telegram' ? 'bg-blue-100 dark:bg-blue-900/30' : 'bg-green-100 dark:bg-green-900/30'
+                      }`}>
+                        {session.platform === 'telegram' ? (
+                          <Send className="w-5 h-5 text-blue-600 dark:text-blue-400" />
+                        ) : (
+                          <MessageCircle className="w-5 h-5 text-green-600 dark:text-green-400" />
+                        )}
+                      </div>
+                      <div>
+                        <p className="font-medium text-gray-900 dark:text-white text-sm">
+                          {session.user_info?.first_name || session.user_info?.name || session.phone_number}
+                        </p>
+                        <p className="text-xs text-gray-500 dark:text-gray-400">
+                          {session.phone_number}
+                        </p>
+                      </div>
+                    </div>
+                    <button
+                      onClick={() => handleDisconnect(session)}
+                      disabled={disconnecting === session.phone_number}
+                      className="p-1.5 hover:bg-red-100 dark:hover:bg-red-900/30 rounded-lg transition-colors"
+                      title="Disconnect"
+                    >
+                      {disconnecting === session.phone_number ? (
+                        <RefreshCw className="w-4 h-4 text-red-500 animate-spin" />
+                      ) : (
+                        <X className="w-4 h-4 text-red-500" />
+                      )}
+                    </button>
+                  </div>
+
+                  <div className="flex items-center justify-between">
+                    {getPlatformBadge(session.platform)}
+                    {getSessionStatusBadge(session)}
+                  </div>
+
+                  {session.user_info?.username && (
+                    <p className="text-xs text-gray-500 dark:text-gray-400 mt-2">
+                      @{session.user_info.username}
+                    </p>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
         </div>
       )}
 

@@ -1,10 +1,13 @@
-import { useState } from 'react';
-import { X, Send, MessageCircle, Phone, Loader2, QrCode } from 'lucide-react';
+import { useState, useEffect, useRef } from 'react';
+import { X, Send, MessageCircle, Phone, Loader2, Lock, RefreshCw, Wifi, WifiOff } from 'lucide-react';
+import { io, Socket } from 'socket.io-client';
 import { useStore } from '../store';
 import { Platform } from '../types';
-import { telegramRequestCode, telegramVerifyCode, whatsappStartAuth } from '../api';
+import { telegramRequestCode, telegramVerifyCode, telegramVerifyPassword, whatsappStartAuth, whatsappGetQR } from '../api';
 
-type Step = 'select-platform' | 'enter-phone' | 'verify-telegram' | 'verify-whatsapp';
+type Step = 'select-platform' | 'enter-phone' | 'verify-telegram' | 'verify-telegram-2fa' | 'verify-whatsapp';
+
+const WHATSAPP_SOCKET_URL = import.meta.env.VITE_WHATSAPP_URL || 'http://localhost:8002';
 
 export function AddAccountModal() {
   const { showAddAccountModal, setShowAddAccountModal, addAccount } = useStore();
@@ -16,9 +19,85 @@ export function AddAccountModal() {
   const [notes, setNotes] = useState('');
   const [verificationCode, setVerificationCode] = useState('');
   const [phoneCodeHash, setPhoneCodeHash] = useState('');
+  const [twoFaPassword, setTwoFaPassword] = useState('');
   const [qrCode, setQrCode] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [connectionStatus, setConnectionStatus] = useState<'waiting' | 'scanning' | 'connected' | 'error'>('waiting');
+
+  const socketRef = useRef<Socket | null>(null);
+
+  // Cleanup socket on unmount or modal close
+  useEffect(() => {
+    return () => {
+      if (socketRef.current) {
+        socketRef.current.disconnect();
+        socketRef.current = null;
+      }
+    };
+  }, []);
+
+  // Setup Socket.io for WhatsApp when entering verify-whatsapp step
+  useEffect(() => {
+    if (step === 'verify-whatsapp' && !socketRef.current) {
+      const socket = io(WHATSAPP_SOCKET_URL, {
+        transports: ['websocket', 'polling'],
+      });
+
+      socket.on('connect', () => {
+        console.log('Socket connected');
+        // Request status for this phone number
+        socket.emit('get-status', phoneNumber);
+      });
+
+      socket.on('qr-code', (data: { phoneNumber: string; qrCode: string }) => {
+        if (data.phoneNumber === phoneNumber) {
+          setQrCode(data.qrCode);
+          setConnectionStatus('waiting');
+        }
+      });
+
+      socket.on('connection-status', (data: { phoneNumber: string; status?: string; isConnected?: boolean; qrCode?: string }) => {
+        if (data.phoneNumber === phoneNumber) {
+          if (data.status === 'connected' || data.isConnected) {
+            setConnectionStatus('connected');
+            // Add account and close modal
+            addAccount({
+              id: Date.now(),
+              phone_number: phoneNumber,
+              country_code: countryCode,
+              platform: 'whatsapp',
+              display_name: displayName || null,
+              status: 'active',
+              registered_at: new Date().toISOString(),
+              last_active: new Date().toISOString(),
+              keep_alive_enabled: true,
+              keep_alive_interval: 86400,
+              notes: notes || null,
+              last_topup: null,
+              last_message_at: null,
+            });
+            setTimeout(() => handleClose(), 1500);
+          } else if (data.qrCode) {
+            setQrCode(data.qrCode);
+          }
+        }
+      });
+
+      socket.on('disconnect', () => {
+        console.log('Socket disconnected');
+      });
+
+      socketRef.current = socket;
+    }
+
+    return () => {
+      if (step !== 'verify-whatsapp' && socketRef.current) {
+        socketRef.current.disconnect();
+        socketRef.current = null;
+      }
+    };
+  }, [step, phoneNumber]);
 
   const resetModal = () => {
     setStep('select-platform');
@@ -29,8 +108,14 @@ export function AddAccountModal() {
     setNotes('');
     setVerificationCode('');
     setPhoneCodeHash('');
+    setTwoFaPassword('');
     setQrCode(null);
     setError(null);
+    setConnectionStatus('waiting');
+    if (socketRef.current) {
+      socketRef.current.disconnect();
+      socketRef.current = null;
+    }
   };
 
   const handleClose = () => {
@@ -99,6 +184,9 @@ export function AddAccountModal() {
             last_message_at: null,
           });
           handleClose();
+        } else {
+          // No QR yet, move to step anyway - socket will provide it
+          setStep('verify-whatsapp');
         }
       }
     } catch (err: any) {
@@ -119,6 +207,13 @@ export function AddAccountModal() {
 
     try {
       const result = await telegramVerifyCode(phoneNumber, verificationCode, phoneCodeHash);
+
+      if (result.requires_password) {
+        // 2FA is enabled, move to password step
+        setStep('verify-telegram-2fa');
+        return;
+      }
+
       if (result.success || result.is_connected) {
         addAccount({
           id: Date.now(),
@@ -138,7 +233,68 @@ export function AddAccountModal() {
         handleClose();
       }
     } catch (err: any) {
-      setError(err.response?.data?.error || 'Invalid verification code');
+      setError(err.response?.data?.error || err.response?.data?.detail || 'Invalid verification code');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleVerifyTelegram2FA = async () => {
+    if (!twoFaPassword.trim()) {
+      setError('Password is required');
+      return;
+    }
+
+    setLoading(true);
+    setError(null);
+
+    try {
+      const result = await telegramVerifyPassword(phoneNumber, twoFaPassword);
+
+      if (result.success) {
+        addAccount({
+          id: Date.now(),
+          phone_number: phoneNumber,
+          country_code: countryCode,
+          platform: 'telegram',
+          display_name: displayName || result.user_info?.first_name || null,
+          status: 'active',
+          registered_at: new Date().toISOString(),
+          last_active: new Date().toISOString(),
+          keep_alive_enabled: true,
+          keep_alive_interval: 86400,
+          notes: notes || null,
+          last_topup: null,
+          last_message_at: null,
+        });
+        handleClose();
+      }
+    } catch (err: any) {
+      setError(err.response?.data?.error || err.response?.data?.detail || 'Invalid password');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleRefreshQR = async () => {
+    setLoading(true);
+    setError(null);
+
+    try {
+      const result = await whatsappGetQR(phoneNumber);
+      if (result.qr_code) {
+        setQrCode(result.qr_code);
+      }
+    } catch (err: any) {
+      // Try restarting auth
+      try {
+        const result = await whatsappStartAuth(phoneNumber);
+        if (result.qr_code) {
+          setQrCode(result.qr_code);
+        }
+      } catch {
+        setError('Failed to refresh QR code');
+      }
     } finally {
       setLoading(false);
     }
@@ -155,6 +311,7 @@ export function AddAccountModal() {
             {step === 'select-platform' && 'Add New Account'}
             {step === 'enter-phone' && `Add ${platform === 'telegram' ? 'Telegram' : 'WhatsApp'} Account`}
             {step === 'verify-telegram' && 'Verify Telegram'}
+            {step === 'verify-telegram-2fa' && 'Two-Factor Authentication'}
             {step === 'verify-whatsapp' && 'Scan QR Code'}
           </h2>
           <button
@@ -282,7 +439,7 @@ export function AddAccountModal() {
                   ) : (
                     <>
                       <Phone className="w-4 h-4" />
-                      Send Code
+                      {platform === 'telegram' ? 'Send Code' : 'Get QR Code'}
                     </>
                   )}
                 </button>
@@ -336,33 +493,128 @@ export function AddAccountModal() {
             </div>
           )}
 
+          {/* Step 3b: Telegram 2FA */}
+          {step === 'verify-telegram-2fa' && (
+            <div className="space-y-4">
+              <div className="flex items-center gap-3 p-3 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg">
+                <Lock className="w-5 h-5 text-blue-600 dark:text-blue-400" />
+                <p className="text-sm text-blue-700 dark:text-blue-300">
+                  Two-factor authentication is enabled on this account
+                </p>
+              </div>
+
+              <p className="text-gray-600 dark:text-gray-400 text-sm">
+                Enter your 2FA password to complete authentication for {phoneNumber}
+              </p>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-1">
+                  2FA Password
+                </label>
+                <input
+                  type="password"
+                  value={twoFaPassword}
+                  onChange={(e) => setTwoFaPassword(e.target.value)}
+                  placeholder="Enter your password"
+                  className="w-full px-3 py-2 border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-white"
+                />
+              </div>
+
+              <div className="flex gap-3">
+                <button
+                  onClick={() => {
+                    setTwoFaPassword('');
+                    setStep('verify-telegram');
+                  }}
+                  className="flex-1 px-4 py-2 border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-700"
+                >
+                  Back
+                </button>
+                <button
+                  onClick={handleVerifyTelegram2FA}
+                  disabled={loading}
+                  className="flex-1 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg flex items-center justify-center gap-2 disabled:opacity-50"
+                >
+                  {loading ? (
+                    <>
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                      Verifying...
+                    </>
+                  ) : (
+                    <>
+                      <Lock className="w-4 h-4" />
+                      Verify Password
+                    </>
+                  )}
+                </button>
+              </div>
+            </div>
+          )}
+
           {/* Step 4: Verify WhatsApp (QR Code) */}
           {step === 'verify-whatsapp' && (
             <div className="space-y-4">
-              <p className="text-gray-600 dark:text-gray-400 text-sm text-center">
-                Scan this QR code with WhatsApp on your phone
-              </p>
+              {/* Connection Status */}
+              {connectionStatus === 'connected' ? (
+                <div className="flex items-center gap-3 p-3 bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 rounded-lg">
+                  <Wifi className="w-5 h-5 text-green-600 dark:text-green-400" />
+                  <p className="text-sm text-green-700 dark:text-green-300">
+                    Connected successfully! Closing...
+                  </p>
+                </div>
+              ) : (
+                <>
+                  <p className="text-gray-600 dark:text-gray-400 text-sm text-center">
+                    Scan this QR code with WhatsApp on your phone
+                  </p>
 
-              <div className="flex justify-center">
-                {qrCode ? (
-                  <img
-                    src={qrCode}
-                    alt="WhatsApp QR Code"
-                    className="w-64 h-64 rounded-lg"
-                  />
-                ) : (
-                  <div className="w-64 h-64 bg-gray-100 dark:bg-gray-700 rounded-lg flex items-center justify-center">
-                    <QrCode className="w-16 h-16 text-gray-400" />
+                  <div className="flex justify-center">
+                    {qrCode ? (
+                      <div className="relative">
+                        <img
+                          src={qrCode}
+                          alt="WhatsApp QR Code"
+                          className="w-64 h-64 rounded-lg"
+                        />
+                        <button
+                          onClick={handleRefreshQR}
+                          disabled={loading}
+                          className="absolute -bottom-2 -right-2 p-2 bg-white dark:bg-gray-700 rounded-full shadow-lg hover:bg-gray-100 dark:hover:bg-gray-600"
+                          title="Refresh QR Code"
+                        >
+                          <RefreshCw className={`w-4 h-4 text-gray-600 dark:text-gray-300 ${loading ? 'animate-spin' : ''}`} />
+                        </button>
+                      </div>
+                    ) : (
+                      <div className="w-64 h-64 bg-gray-100 dark:bg-gray-700 rounded-lg flex flex-col items-center justify-center gap-4">
+                        <Loader2 className="w-8 h-8 text-gray-400 animate-spin" />
+                        <p className="text-sm text-gray-500">Generating QR code...</p>
+                      </div>
+                    )}
                   </div>
-                )}
-              </div>
 
-              <p className="text-xs text-gray-500 dark:text-gray-400 text-center">
-                1. Open WhatsApp on your phone<br />
-                2. Tap Menu or Settings &gt; Linked Devices<br />
-                3. Tap Link a Device<br />
-                4. Point your phone at this screen
-              </p>
+                  <div className="flex items-center justify-center gap-2 text-sm">
+                    {connectionStatus === 'waiting' ? (
+                      <>
+                        <WifiOff className="w-4 h-4 text-yellow-500" />
+                        <span className="text-yellow-600 dark:text-yellow-400">Waiting for scan...</span>
+                      </>
+                    ) : connectionStatus === 'scanning' ? (
+                      <>
+                        <Loader2 className="w-4 h-4 text-blue-500 animate-spin" />
+                        <span className="text-blue-600 dark:text-blue-400">Connecting...</span>
+                      </>
+                    ) : null}
+                  </div>
+
+                  <p className="text-xs text-gray-500 dark:text-gray-400 text-center">
+                    1. Open WhatsApp on your phone<br />
+                    2. Tap Menu or Settings &gt; Linked Devices<br />
+                    3. Tap Link a Device<br />
+                    4. Point your phone at this screen
+                  </p>
+                </>
+              )}
 
               <button
                 onClick={() => setStep('enter-phone')}

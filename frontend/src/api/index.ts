@@ -95,6 +95,24 @@ export const telegramGetChats = async (phone_number: string): Promise<Chat[]> =>
   return response.data.chats || [];
 };
 
+export const telegramVerifyPassword = async (phone_number: string, password: string) => {
+  const response = await api.post('/telegram/auth/verify-password', {
+    phone_number,
+    password,
+  });
+  return response.data;
+};
+
+export const getTelegramActiveSessions = async () => {
+  const response = await api.get('/telegram/accounts/active');
+  return response.data;
+};
+
+export const telegramDisconnect = async (phone_number: string) => {
+  const response = await api.post(`/telegram/account/disconnect/${phone_number}`);
+  return response.data;
+};
+
 // WhatsApp
 export const whatsappStartAuth = async (phone_number: string) => {
   const response = await api.post('/whatsapp/auth/start', { phone_number });
@@ -123,6 +141,16 @@ export const whatsappSendMessage = async (phone_number: string, chat_id: string,
 export const whatsappGetChats = async (phone_number: string): Promise<Chat[]> => {
   const response = await api.get(`/whatsapp/chats/${phone_number}`);
   return response.data.chats || [];
+};
+
+export const getWhatsAppActiveSessions = async () => {
+  const response = await api.get('/whatsapp/accounts/active');
+  return response.data;
+};
+
+export const whatsappDisconnect = async (phone_number: string) => {
+  const response = await api.post(`/whatsapp/account/disconnect/${phone_number}`);
+  return response.data;
 };
 
 export default api;
