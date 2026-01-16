@@ -335,7 +335,7 @@ async def get_chats(phone_number: str, limit: int = 20):
 
 @app.post("/account/disconnect/{phone_number}")
 async def disconnect_account(phone_number: str):
-    """Disconnect an account"""
+    """Disconnect an account and delete session file"""
     try:
         if phone_number in active_clients:
             client = active_clients[phone_number]
@@ -343,10 +343,16 @@ async def disconnect_account(phone_number: str):
             del active_clients[phone_number]
             logger.info(f"Disconnected {phone_number}")
 
+        # Delete session file if exists
+        session_file = SESSION_DIR / f"{phone_number}.session"
+        if session_file.exists():
+            session_file.unlink()
+            logger.info(f"Deleted session file for {phone_number}")
+
         return {
             "success": True,
             "phone_number": phone_number,
-            "message": "Account disconnected"
+            "message": "Account disconnected and session deleted"
         }
 
     except Exception as e:
