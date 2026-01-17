@@ -1,11 +1,12 @@
 import { useState, useEffect, useRef } from 'react';
-import { X, Send, MessageCircle, Phone, Loader2, Lock, RefreshCw, Wifi, WifiOff } from 'lucide-react';
+import { X, Send, MessageCircle, Phone, Loader2, Lock, RefreshCw, Wifi, WifiOff, QrCode, Hash } from 'lucide-react';
 import { io, Socket } from 'socket.io-client';
 import { useStore } from '../store';
 import { Platform } from '../types';
-import { telegramRequestCode, telegramVerifyCode, telegramVerifyPassword, whatsappStartAuth, whatsappGetQR, createAccount } from '../api';
+import { telegramRequestCode, telegramVerifyCode, telegramVerifyPassword, whatsappStartAuth, whatsappGetQR, whatsappRequestPairingCode, createAccount } from '../api';
 
-type Step = 'select-platform' | 'enter-phone' | 'verify-telegram' | 'verify-telegram-2fa' | 'verify-whatsapp';
+type Step = 'select-platform' | 'enter-phone' | 'verify-telegram' | 'verify-telegram-2fa' | 'select-whatsapp-method' | 'verify-whatsapp' | 'verify-whatsapp-pairing';
+type WhatsAppAuthMethod = 'qr' | 'pairing';
 
 const WHATSAPP_SOCKET_URL = import.meta.env.VITE_WHATSAPP_URL || 'http://localhost:8002';
 
@@ -21,9 +22,12 @@ export function AddAccountModal() {
   const [phoneCodeHash, setPhoneCodeHash] = useState('');
   const [twoFaPassword, setTwoFaPassword] = useState('');
   const [qrCode, setQrCode] = useState<string | null>(null);
+  const [pairingCode, setPairingCode] = useState<string | null>(null);
+  const [whatsappAuthMethod, setWhatsappAuthMethod] = useState<WhatsAppAuthMethod>('qr');
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [connectionStatus, setConnectionStatus] = useState<'waiting' | 'scanning' | 'connected' | 'error'>('waiting');
+  const [qrGenerationFailed, setQrGenerationFailed] = useState(false);
 
   const socketRef = useRef<Socket | null>(null);
 
@@ -37,9 +41,11 @@ export function AddAccountModal() {
     };
   }, []);
 
-  // Setup Socket.io for WhatsApp when entering verify-whatsapp step
+  // Setup Socket.io for WhatsApp when entering verify-whatsapp or verify-whatsapp-pairing step
   useEffect(() => {
-    if (step === 'verify-whatsapp' && !socketRef.current) {
+    const isWhatsAppStep = step === 'verify-whatsapp' || step === 'verify-whatsapp-pairing';
+
+    if (isWhatsAppStep && !socketRef.current) {
       const socket = io(WHATSAPP_SOCKET_URL, {
         transports: ['websocket', 'polling'],
       });
@@ -53,16 +59,24 @@ export function AddAccountModal() {
       socket.on('qr-code', (data: { phoneNumber: string; qrCode: string }) => {
         if (data.phoneNumber === phoneNumber) {
           setQrCode(data.qrCode);
+          setQrGenerationFailed(false);
           setConnectionStatus('waiting');
         }
       });
 
-      socket.on('connection-status', async (data: { phoneNumber: string; status?: string; isConnected?: boolean; qrCode?: string }) => {
+      socket.on('pairing-code', (data: { phoneNumber: string; pairingCode: string }) => {
+        if (data.phoneNumber === phoneNumber) {
+          setPairingCode(data.pairingCode);
+          setConnectionStatus('waiting');
+        }
+      });
+
+      socket.on('connection-status', async (data: { phoneNumber: string; status?: string; isConnected?: boolean; qrCode?: string; user_info?: { id?: string; name?: string } }) => {
         if (data.phoneNumber === phoneNumber) {
           if (data.status === 'connected' || data.isConnected) {
             setConnectionStatus('connected');
             // Save account to database and close modal
-            await saveAccount('whatsapp');
+            await saveAccount('whatsapp', data.user_info);
             setTimeout(() => handleClose(), 1500);
           } else if (data.qrCode) {
             setQrCode(data.qrCode);
@@ -78,7 +92,7 @@ export function AddAccountModal() {
     }
 
     return () => {
-      if (step !== 'verify-whatsapp' && socketRef.current) {
+      if (!isWhatsAppStep && socketRef.current) {
         socketRef.current.disconnect();
         socketRef.current = null;
       }
@@ -96,8 +110,11 @@ export function AddAccountModal() {
     setPhoneCodeHash('');
     setTwoFaPassword('');
     setQrCode(null);
+    setPairingCode(null);
+    setWhatsappAuthMethod('qr');
     setError(null);
     setConnectionStatus('waiting');
+    setQrGenerationFailed(false);
     if (socketRef.current) {
       socketRef.current.disconnect();
       socketRef.current = null;
@@ -188,20 +205,81 @@ export function AddAccountModal() {
           handleClose();
         }
       } else if (platform === 'whatsapp') {
-        const result = await whatsappStartAuth(phoneNumber);
-        if (result.qr_code) {
-          setQrCode(result.qr_code);
-          setStep('verify-whatsapp');
-        } else if (result.status === 'connected') {
-          await saveAccount('whatsapp');
-          handleClose();
-        } else {
-          // No QR yet, move to step anyway - socket will provide it
-          setStep('verify-whatsapp');
-        }
+        // Go to WhatsApp auth method selection
+        setStep('select-whatsapp-method');
       }
     } catch (err: any) {
       setError(err.response?.data?.error || 'Failed to initiate verification');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Start WhatsApp auth with selected method
+  const handleStartWhatsAppAuth = async (method: WhatsAppAuthMethod) => {
+    setWhatsappAuthMethod(method);
+    setLoading(true);
+    setError(null);
+    setQrGenerationFailed(false);
+
+    try {
+      if (method === 'qr') {
+        const result = await whatsappStartAuth(phoneNumber);
+        if (result.status === 'connected') {
+          await saveAccount('whatsapp');
+          handleClose();
+          return;
+        }
+        if (result.qr_code) {
+          setQrCode(result.qr_code);
+        }
+        setStep('verify-whatsapp');
+
+        // Set timeout to detect QR generation failure
+        setTimeout(() => {
+          if (!qrCode) {
+            setQrGenerationFailed(true);
+          }
+        }, 10000);
+      } else {
+        // Pairing code method
+        const result = await whatsappRequestPairingCode(phoneNumber);
+        if (result.status === 'connected') {
+          await saveAccount('whatsapp');
+          handleClose();
+          return;
+        }
+        if (result.pairing_code) {
+          setPairingCode(result.pairing_code);
+        }
+        setStep('verify-whatsapp-pairing');
+      }
+    } catch (err: any) {
+      const errorMessage = err.response?.data?.error || 'Failed to start authentication';
+      setError(errorMessage);
+
+      // If QR method failed, suggest pairing code
+      if (method === 'qr') {
+        setQrGenerationFailed(true);
+      }
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Switch from QR to pairing code method
+  const handleSwitchToPairingCode = async () => {
+    setLoading(true);
+    setError(null);
+
+    try {
+      const result = await whatsappRequestPairingCode(phoneNumber);
+      if (result.pairing_code) {
+        setPairingCode(result.pairing_code);
+        setStep('verify-whatsapp-pairing');
+      }
+    } catch (err: any) {
+      setError(err.response?.data?.error || 'Failed to get pairing code');
     } finally {
       setLoading(false);
     }
@@ -295,7 +373,9 @@ export function AddAccountModal() {
             {step === 'enter-phone' && `Add ${platform === 'telegram' ? 'Telegram' : 'WhatsApp'} Account`}
             {step === 'verify-telegram' && 'Verify Telegram'}
             {step === 'verify-telegram-2fa' && 'Two-Factor Authentication'}
+            {step === 'select-whatsapp-method' && 'Link WhatsApp'}
             {step === 'verify-whatsapp' && 'Scan QR Code'}
+            {step === 'verify-whatsapp-pairing' && 'Link with Phone Number'}
           </h2>
           <button
             onClick={handleClose}
@@ -534,7 +614,63 @@ export function AddAccountModal() {
             </div>
           )}
 
-          {/* Step 4: Verify WhatsApp (QR Code) */}
+          {/* Step 4a: Select WhatsApp Auth Method */}
+          {step === 'select-whatsapp-method' && (
+            <div className="space-y-4">
+              <p className="text-gray-600 dark:text-gray-400 text-sm">
+                Choose how to link your WhatsApp account for {phoneNumber}:
+              </p>
+
+              <div className="space-y-3">
+                <button
+                  onClick={() => handleStartWhatsAppAuth('qr')}
+                  disabled={loading}
+                  className="w-full flex items-center gap-4 p-4 border-2 border-gray-200 dark:border-gray-700 hover:border-green-500 dark:hover:border-green-500 rounded-xl transition-colors text-left"
+                >
+                  <div className="w-12 h-12 bg-green-100 dark:bg-green-900/30 rounded-full flex items-center justify-center flex-shrink-0">
+                    <QrCode className="w-6 h-6 text-green-600 dark:text-green-400" />
+                  </div>
+                  <div className="flex-1">
+                    <h3 className="font-medium text-gray-900 dark:text-white">Scan QR Code</h3>
+                    <p className="text-sm text-gray-500 dark:text-gray-400">
+                      Scan a QR code with your phone camera
+                    </p>
+                  </div>
+                  {loading && whatsappAuthMethod === 'qr' && (
+                    <Loader2 className="w-5 h-5 animate-spin text-green-600" />
+                  )}
+                </button>
+
+                <button
+                  onClick={() => handleStartWhatsAppAuth('pairing')}
+                  disabled={loading}
+                  className="w-full flex items-center gap-4 p-4 border-2 border-gray-200 dark:border-gray-700 hover:border-blue-500 dark:hover:border-blue-500 rounded-xl transition-colors text-left"
+                >
+                  <div className="w-12 h-12 bg-blue-100 dark:bg-blue-900/30 rounded-full flex items-center justify-center flex-shrink-0">
+                    <Hash className="w-6 h-6 text-blue-600 dark:text-blue-400" />
+                  </div>
+                  <div className="flex-1">
+                    <h3 className="font-medium text-gray-900 dark:text-white">Link with Phone Number</h3>
+                    <p className="text-sm text-gray-500 dark:text-gray-400">
+                      Enter a code on your WhatsApp phone
+                    </p>
+                  </div>
+                  {loading && whatsappAuthMethod === 'pairing' && (
+                    <Loader2 className="w-5 h-5 animate-spin text-blue-600" />
+                  )}
+                </button>
+              </div>
+
+              <button
+                onClick={() => setStep('enter-phone')}
+                className="w-full px-4 py-2 border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-700"
+              >
+                Back
+              </button>
+            </div>
+          )}
+
+          {/* Step 4b: Verify WhatsApp (QR Code) */}
           {step === 'verify-whatsapp' && (
             <div className="space-y-4">
               {/* Connection Status */}
@@ -596,11 +732,105 @@ export function AddAccountModal() {
                     3. Tap Link a Device<br />
                     4. Point your phone at this screen
                   </p>
+
+                  {/* Fallback option when QR fails */}
+                  {(qrGenerationFailed || !qrCode) && (
+                    <div className="mt-4 p-3 bg-yellow-50 dark:bg-yellow-900/20 border border-yellow-200 dark:border-yellow-800 rounded-lg">
+                      <p className="text-sm text-yellow-700 dark:text-yellow-300 mb-2">
+                        QR code not loading? Try linking with your phone number instead.
+                      </p>
+                      <button
+                        onClick={handleSwitchToPairingCode}
+                        disabled={loading}
+                        className="w-full px-3 py-2 bg-yellow-600 hover:bg-yellow-700 text-white rounded-lg flex items-center justify-center gap-2 text-sm"
+                      >
+                        {loading ? (
+                          <Loader2 className="w-4 h-4 animate-spin" />
+                        ) : (
+                          <Hash className="w-4 h-4" />
+                        )}
+                        Use Phone Number Instead
+                      </button>
+                    </div>
+                  )}
                 </>
               )}
 
               <button
-                onClick={() => setStep('enter-phone')}
+                onClick={() => setStep('select-whatsapp-method')}
+                className="w-full px-4 py-2 border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-700"
+              >
+                Back
+              </button>
+            </div>
+          )}
+
+          {/* Step 4c: Verify WhatsApp (Pairing Code) */}
+          {step === 'verify-whatsapp-pairing' && (
+            <div className="space-y-4">
+              {/* Connection Status */}
+              {connectionStatus === 'connected' ? (
+                <div className="flex items-center gap-3 p-3 bg-green-50 dark:bg-green-900/20 border border-green-200 dark:border-green-800 rounded-lg">
+                  <Wifi className="w-5 h-5 text-green-600 dark:text-green-400" />
+                  <p className="text-sm text-green-700 dark:text-green-300">
+                    Connected successfully! Closing...
+                  </p>
+                </div>
+              ) : (
+                <>
+                  <p className="text-gray-600 dark:text-gray-400 text-sm text-center">
+                    Enter this code on your WhatsApp phone for {phoneNumber}
+                  </p>
+
+                  <div className="flex justify-center">
+                    {pairingCode ? (
+                      <div className="bg-gray-100 dark:bg-gray-700 rounded-xl p-6 text-center">
+                        <p className="text-4xl font-mono font-bold tracking-widest text-gray-900 dark:text-white">
+                          {pairingCode.slice(0, 4)}-{pairingCode.slice(4)}
+                        </p>
+                        <p className="mt-2 text-sm text-gray-500 dark:text-gray-400">
+                          Code expires in 60 seconds
+                        </p>
+                      </div>
+                    ) : (
+                      <div className="w-full bg-gray-100 dark:bg-gray-700 rounded-xl p-6 flex flex-col items-center gap-2">
+                        <Loader2 className="w-8 h-8 text-gray-400 animate-spin" />
+                        <p className="text-sm text-gray-500">Generating pairing code...</p>
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="flex items-center justify-center gap-2 text-sm">
+                    <WifiOff className="w-4 h-4 text-yellow-500" />
+                    <span className="text-yellow-600 dark:text-yellow-400">Waiting for connection...</span>
+                  </div>
+
+                  <div className="p-3 bg-blue-50 dark:bg-blue-900/20 border border-blue-200 dark:border-blue-800 rounded-lg">
+                    <p className="text-xs text-blue-700 dark:text-blue-300">
+                      <strong>How to link:</strong><br />
+                      1. Open WhatsApp on your phone<br />
+                      2. Tap Menu or Settings &gt; Linked Devices<br />
+                      3. Tap <strong>Link a Device</strong><br />
+                      4. Tap <strong>Link with Phone Number Instead</strong><br />
+                      5. Enter the code shown above
+                    </p>
+                  </div>
+
+                  {/* Option to switch to QR */}
+                  <button
+                    onClick={() => {
+                      setPairingCode(null);
+                      handleStartWhatsAppAuth('qr');
+                    }}
+                    className="text-sm text-blue-600 dark:text-blue-400 hover:underline"
+                  >
+                    Try QR code instead
+                  </button>
+                </>
+              )}
+
+              <button
+                onClick={() => setStep('select-whatsapp-method')}
                 className="w-full px-4 py-2 border border-gray-300 dark:border-gray-600 text-gray-700 dark:text-gray-300 rounded-lg hover:bg-gray-50 dark:hover:bg-gray-700"
               >
                 Back

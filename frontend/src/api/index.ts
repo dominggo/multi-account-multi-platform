@@ -124,6 +124,11 @@ export const whatsappStartAuth = async (phone_number: string) => {
   return response.data;
 };
 
+export const whatsappRequestPairingCode = async (phone_number: string) => {
+  const response = await api.post('/whatsapp/auth/pairing-code', { phone_number });
+  return response.data;
+};
+
 export const whatsappGetQR = async (phone_number: string) => {
   const response = await api.get(`/whatsapp/auth/qr/${phone_number}`);
   return response.data;

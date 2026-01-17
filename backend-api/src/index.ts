@@ -27,6 +27,9 @@ const WHATSAPP_API = process.env.WHATSAPP_API_URL || 'http://localhost:8002';
 // Express app
 const app: Express = express();
 
+// Trust proxy (for reverse proxy setups like Nginx/Caddy)
+app.set('trust proxy', 1);
+
 // Security middleware
 app.use(helmet());
 app.use(cors({ origin: ALLOWED_ORIGINS, credentials: true }));

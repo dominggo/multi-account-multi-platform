@@ -71,6 +71,8 @@ app.use(express.urlencoded({ extended: true }));
 // In-memory storage for active WhatsApp sockets
 const activeSessions = new Map<string, WASocket>();
 const sessionQRCodes = new Map<string, string>();
+const sessionPairingCodes = new Map<string, string>();
+const pendingSockets = new Map<string, WASocket>(); // Sockets waiting for auth
 
 // ============================================================================
 // Helper Functions
@@ -92,8 +94,10 @@ function getSessionDir(phone: string): string {
 
 /**
  * Create WhatsApp socket connection
+ * @param phoneNumber - Phone number to connect
+ * @param generateQR - Whether to generate QR code (false for pairing code method)
  */
-async function createWhatsAppSocket(phoneNumber: string): Promise<WASocket> {
+async function createWhatsAppSocket(phoneNumber: string, generateQR: boolean = true): Promise<WASocket> {
   const sessionDir = getSessionDir(phoneNumber);
 
   // Create auth state
@@ -107,12 +111,15 @@ async function createWhatsAppSocket(phoneNumber: string): Promise<WASocket> {
     browser: ['Multi-Account Platform', 'Chrome', '120.0.0'],
   });
 
+  // Store in pending sockets for later pairing code request
+  pendingSockets.set(phoneNumber, sock);
+
   // Event: Connection update
   sock.ev.on('connection.update', async (update) => {
     const { connection, lastDisconnect, qr } = update;
 
-    // QR Code received
-    if (qr) {
+    // QR Code received - only handle if generateQR is true
+    if (qr && generateQR) {
       try {
         const qrDataURL = await QRCode.toDataURL(qr);
         sessionQRCodes.set(phoneNumber, qrDataURL);
@@ -134,10 +141,14 @@ async function createWhatsAppSocket(phoneNumber: string): Promise<WASocket> {
         `Connection closed for ${phoneNumber}. Reconnecting: ${shouldReconnect}`
       );
 
+      // Clean up pending state
+      pendingSockets.delete(phoneNumber);
+      sessionPairingCodes.delete(phoneNumber);
+
       if (shouldReconnect) {
         // Retry connection
         setTimeout(() => {
-          createWhatsAppSocket(phoneNumber);
+          createWhatsAppSocket(phoneNumber, generateQR);
         }, 5000);
       } else {
         // Logged out - remove session
@@ -149,7 +160,11 @@ async function createWhatsAppSocket(phoneNumber: string): Promise<WASocket> {
     // Connection open
     if (connection === 'open') {
       logger.info(`WhatsApp connected for ${phoneNumber}`);
+
+      // Clean up all pending states
       sessionQRCodes.delete(phoneNumber);
+      sessionPairingCodes.delete(phoneNumber);
+      pendingSockets.delete(phoneNumber);
 
       // Store active session
       activeSessions.set(phoneNumber, sock);
@@ -158,6 +173,10 @@ async function createWhatsAppSocket(phoneNumber: string): Promise<WASocket> {
       io.emit('connection-status', {
         phoneNumber,
         status: 'connected',
+        user_info: {
+          id: sock.user?.id,
+          name: sock.user?.name,
+        },
       });
     }
   });
@@ -254,6 +273,67 @@ app.post('/auth/start', async (req: Request, res: Response): Promise<void> => {
 });
 
 /**
+ * Start authentication with pairing code (alternative to QR)
+ * Phone number must include country code without + (e.g., "601123456789")
+ */
+app.post('/auth/pairing-code', async (req: Request, res: Response): Promise<void> => {
+  try {
+    const { phone_number } = req.body;
+
+    if (!phone_number) {
+      res.status(400).json({ error: 'phone_number is required (with country code, e.g., 601123456789)' });
+      return;
+    }
+
+    // Check if already connected
+    if (activeSessions.has(phone_number)) {
+      res.json({
+        success: true,
+        message: 'Already connected',
+        status: 'connected',
+      });
+      return;
+    }
+
+    // Create socket without QR generation
+    const sock = await createWhatsAppSocket(phone_number, false);
+
+    // Wait a moment for socket to initialize
+    await new Promise((resolve) => setTimeout(resolve, 1500));
+
+    // Request pairing code
+    const phoneWithCountryCode = phone_number.replace(/[^0-9]/g, '');
+    const pairingCode = await sock.requestPairingCode(phoneWithCountryCode);
+
+    // Store pairing code
+    sessionPairingCodes.set(phone_number, pairingCode);
+
+    logger.info(`Pairing code generated for ${phone_number}: ${pairingCode}`);
+
+    // Emit via Socket.io
+    io.emit('pairing-code', { phoneNumber: phone_number, pairingCode });
+
+    res.json({
+      success: true,
+      phone_number,
+      pairing_code: pairingCode,
+      message: 'Enter this code in WhatsApp > Linked Devices > Link a Device > Link with Phone Number',
+    });
+  } catch (error: any) {
+    logger.error('Error generating pairing code:', error);
+
+    // Clean up on error
+    pendingSockets.delete(req.body.phone_number);
+    sessionPairingCodes.delete(req.body.phone_number);
+
+    res.status(500).json({
+      error: error.message || 'Failed to generate pairing code',
+      fallback: 'Try using QR code method instead',
+    });
+  }
+});
+
+/**
  * Get QR code for a phone number
  */
 app.get('/auth/qr/:phone_number', (req: Request, res: Response): void => {
@@ -268,6 +348,24 @@ app.get('/auth/qr/:phone_number', (req: Request, res: Response): void => {
   res.json({
     phone_number,
     qr_code: qrCode,
+  });
+});
+
+/**
+ * Get pairing code for a phone number
+ */
+app.get('/auth/pairing-code/:phone_number', (req: Request, res: Response): void => {
+  const { phone_number } = req.params;
+  const pairingCode = sessionPairingCodes.get(phone_number);
+
+  if (!pairingCode) {
+    res.status(404).json({ error: 'Pairing code not found or session already connected' });
+    return;
+  }
+
+  res.json({
+    phone_number,
+    pairing_code: pairingCode,
   });
 });
 
